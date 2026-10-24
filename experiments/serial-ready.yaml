@@ -1,0 +1,11 @@
+# Set your serial port and the literal banner emitted by your firmware.
+name: serial-ready
+device: ../devices/serial.toml
+transport:
+  serial:
+    port: "/dev/ttyUSB0"
+    baud: 115200
+phases:
+  - name: boot
+    ops:
+      - { op: serial_expect, pattern: "READY", timeout_ms: 8000 }

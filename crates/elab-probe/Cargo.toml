@@ -1,0 +1,9 @@
+[package]
+name = "elab-probe"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+elab-core = { path = "../elab-core" }
+probe-rs = "0.32"

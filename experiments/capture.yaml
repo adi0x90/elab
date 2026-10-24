@@ -1,0 +1,12 @@
+# Replace firmware.elf and the profile's checkpoint address for your target.
+name: capture
+device: ../devices/example.toml
+transport:
+  gdb:
+    endpoint: "127.0.0.1:3333"
+    elf: "firmware.elf"
+phases:
+  - name: baseline
+    ops:
+      - { op: stop, at: checkpoint }
+      - { op: capture, name: pc, expr: "$pc" }

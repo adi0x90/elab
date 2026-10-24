@@ -1,0 +1,5 @@
+name = "serial"
+description = "Serial-only target; no image identity checks"
+
+[image]
+[stops]

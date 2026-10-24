@@ -1,0 +1,12 @@
+name = "example"
+description = "GDB template: replace the checkpoint address for your firmware"
+endian = "little"
+
+[image]
+# Configure the full ELF SHA-256 and file-backed code ranges before use.
+# elf_sha256 = "<64-character SHA-256>"
+# verify = [{ addr = 0x08000100, n = 16 }]
+
+[stops]
+# Placeholder address; this is not a ready-to-run target profile.
+checkpoint = { addr = 0x08000100 }

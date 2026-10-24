@@ -1,0 +1,10 @@
+[package]
+name = "elab-gdb"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+elab-core = { path = "../elab-core" }
+regex.workspace = true
+hex.workspace = true
