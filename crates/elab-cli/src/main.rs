@@ -177,10 +177,14 @@ fn machine_for(
         let mut gdb = elab_gdb::Gdb::new(elf.to_str().unwrap_or(&g.elf))?;
         if let Some(o) = &spec.transport.openocd {
             let h = elab_core::openocd::ensure_running(o)?;
-            gdb.set_openocd_telnet("127.0.0.1", o.telnet_port);
+            let (telnet_host, telnet_port) = h.local_telnet();
+            gdb.set_openocd_flash(&telnet_host, telnet_port, h.remote_target());
+            let ep = h.local_gdb_endpoint();
             ocd_handle = Some(h);
+            gdb.connect(&ep)?;
+        } else {
+            gdb.connect(&g.endpoint)?;
         }
-        gdb.connect(&g.endpoint)?;
         check_image(device, &elf, &mut gdb)?;
         return Ok((Box::new(gdb), ocd_handle));
     }

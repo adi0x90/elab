@@ -22,6 +22,9 @@ pub struct Gdb {
     /// Optional OpenOCD telnet endpoint (host, port) for flash-driver
     /// commands; set by the CLI when the spec configures openocd.
     openocd_telnet: Option<(String, u16)>,
+    /// user@host to fetch OpenOCD-written files (flash dumps) from; None
+    /// when OpenOCD runs on this machine.
+    openocd_scp_target: Option<String>,
 }
 
 /// Drain `stdout` on a thread so the main thread can time out waiting for a
@@ -85,6 +88,7 @@ impl Gdb {
             lines: start_reader(stdout),
             timeout_ms: 10_000,
             openocd_telnet: None,
+            openocd_scp_target: None,
         };
         gdb.cmd("-gdb-set pagination off")?;
         gdb.cmd("-gdb-set confirm off")?;
@@ -98,8 +102,9 @@ impl Gdb {
     }
 
     /// Attach the OpenOCD telnet endpoint used for flash-driver commands.
-    pub fn set_openocd_telnet(&mut self, host: &str, port: u16) {
+    pub fn set_openocd_flash(&mut self, host: &str, port: u16, scp_target: Option<&str>) {
         self.openocd_telnet = Some((host.to_string(), port));
+        self.openocd_scp_target = scp_target.map(|s| s.to_string());
     }
 
     /// Read raw flash through OpenOCD's flash driver via `monitor flash
@@ -137,22 +142,21 @@ impl Gdb {
                 out.trim()
             )));
         }
-        // Read the file from wherever OpenOCD ran, then clean it up.
-        let bytes = if host == "127.0.0.1" {
-            std::fs::read(&tmp)
-                .map_err(|e| ElabError::Machine(format!("flash dump file {tmp} unreadable: {e}")))?
-        } else {
+        // Read the file from wherever OpenOCD ran, then clean it up. With a
+        // tunnel, the telnet endpoint is always 127.0.0.1 — the scp target
+        // is what tells us the file lives on a remote host.
+        let bytes = if let Some(target) = &self.openocd_scp_target {
             // Remote OpenOCD: scp the file back, read, remove.
             let local = std::env::temp_dir().join(format!("elab-flash-{ts}.bin"));
             let st = Command::new("scp")
                 .arg("-q")
-                .arg(format!("{host}:{tmp}"))
+                .arg(format!("{target}:{tmp}"))
                 .arg(&local)
                 .status()
                 .map_err(|e| ElabError::Machine(format!("scp flash dump: {e}")))?;
             if !st.success() {
                 return Err(ElabError::Machine(format!(
-                    "scp flash dump {host}:{tmp} failed"
+                    "scp flash dump {target}:{tmp} failed"
                 )));
             }
             let b = std::fs::read(&local).map_err(|e| {
@@ -160,6 +164,9 @@ impl Gdb {
             })?;
             let _ = std::fs::remove_file(&local);
             b
+        } else {
+            std::fs::read(&tmp)
+                .map_err(|e| ElabError::Machine(format!("flash dump file {tmp} unreadable: {e}")))?
         };
         let _ = t.cmd(&format!("exec rm -f {tmp}"), 5000);
         if bytes.len() != len {

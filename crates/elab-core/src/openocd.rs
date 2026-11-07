@@ -25,6 +25,44 @@ pub struct OpenOcdHandle {
     /// Remote pid file written when elab started the remote openocd.
     remote_pid_file: Option<String>,
     spawned: bool,
+    /// Locally reachable gdb/telnet ports. Equal to the spec ports for a
+    /// local server; reserved free ports when reached through a tunnel.
+    local_gdb_port: u16,
+    local_telnet_port: u16,
+    /// user@host of the machine OpenOCD runs on, when remote. Files written
+    /// by OpenOCD (flash dumps) live on that host.
+    remote_target: Option<String>,
+}
+
+impl OpenOcdHandle {
+    /// The gdb endpoint (host:port) a GDB client should connect to.
+    pub fn local_gdb_endpoint(&self) -> String {
+        format!("127.0.0.1:{}", self.local_gdb_port)
+    }
+
+    /// The telnet endpoint (host, port) for flash-driver commands.
+    pub fn local_telnet(&self) -> (String, u16) {
+        ("127.0.0.1".to_string(), self.local_telnet_port)
+    }
+
+    /// user@host where OpenOCD runs, when it is remote; files it writes
+    /// (flash dumps) must be fetched from there.
+    pub fn remote_target(&self) -> Option<&str> {
+        self.remote_target.as_deref()
+    }
+}
+
+/// Bind an ephemeral port to reserve it, release, and return the number.
+/// The race window between release and rebind is small and acceptable here.
+fn reserve_free_port() -> Result<u16> {
+    let l = std::net::TcpListener::bind("127.0.0.1:0")
+        .map_err(|e| ElabError::msg(format!("reserve port: {e}")))?;
+    let port = l
+        .local_addr()
+        .map_err(|e| ElabError::msg(format!("reserve port: {e}")))?
+        .port();
+    drop(l);
+    Ok(port)
 }
 
 impl Drop for OpenOcdHandle {
@@ -215,35 +253,74 @@ pub fn serial_port_holders(dev: &str, ssh_target: Option<&str>) -> Result<Vec<St
 /// owns (and on drop, stops) any process elab spawned.
 pub fn ensure_running(spec: &OpenOcdSpec) -> Result<OpenOcdHandle> {
     let target = ssh_target(spec);
-    let gdb_host = match &target {
-        Some(_) => "127.0.0.1", // via tunnel
-        None => "127.0.0.1",
-    };
-    let remote_gdb = if target.is_some() {
-        spec.gdb_port
-    } else {
-        spec.gdb_port
+
+    // 1. Is an OpenOCD already listening? For a remote host, probe the
+    // remote ports over ssh — the local ports may be held by unrelated
+    // services (a local 3333 says nothing about a remote one).
+    let remote_listening = match &target {
+        Some(t) => {
+            let st = Command::new("ssh")
+                .arg(t)
+                .arg(format!(
+                    "timeout 2 bash -c '</dev/tcp/127.0.0.1/{}' 2>/dev/null && echo OPEN || echo CLOSED",
+                    spec.gdb_port
+                ))
+                .output()
+                .map_err(|e| ElabError::msg(format!("ssh port probe: {e}")))?;
+            String::from_utf8_lossy(&st.stdout).contains("OPEN")
+        }
+        None => port_listening("127.0.0.1", spec.gdb_port, 500),
     };
 
-    // 1. Something already listening?
-    if port_listening(gdb_host, spec.gdb_port, 500) {
-        // Distinguish openocd (reuse) from an impostor (error).
-        let telnet_host = match &target {
-            Some(_) => "127.0.0.1",
-            None => "127.0.0.1",
-        };
-        let telnet = if target.is_some() {
-            spec.telnet_port
-        } else {
-            spec.telnet_port
-        };
-        if telnet_is_openocd(telnet_host, telnet) {
+    if remote_listening {
+        // Reuse: for a remote host the tunnel is ours to manage (and on
+        // drop, to tear down); the remote openocd itself is left alone.
+        if let Some(t) = &target {
+            // Reserve free local ports: the local spec ports may be held by
+            // unrelated services, and ssh -L would fail to bind on them.
+            let l_gdb = reserve_free_port()?;
+            let l_telnet = reserve_free_port()?;
+            let child = Command::new("ssh")
+                .arg("-N")
+                .arg("-L")
+                .arg(format!("{}:127.0.0.1:{}", l_gdb, spec.gdb_port))
+                .arg("-L")
+                .arg(format!("{}:127.0.0.1:{}", l_telnet, spec.telnet_port))
+                .arg(t)
+                .stdout(Stdio::null())
+                .stderr(Stdio::null())
+                .spawn()
+                .map_err(|e| ElabError::msg(format!("ssh tunnel spawn: {e}")))?;
+            wait_ports(l_gdb, l_telnet)?;
+            // Impersonator check runs through the now-live tunnel.
+            if !telnet_is_openocd("127.0.0.1", l_telnet) {
+                return Err(ElabError::msg(format!(
+                    "remote port {} is listening but does not speak OpenOCD; another process may be bound there",
+                    spec.gdb_port
+                )));
+            }
+            return Ok(OpenOcdHandle {
+                local_child: None,
+                tunnel: Some(child),
+                ssh_target: None,
+                remote_pid_file: None,
+                spawned: true,
+                local_gdb_port: l_gdb,
+                local_telnet_port: l_telnet,
+                remote_target: Some(t.clone()),
+            });
+        }
+        // Local reuse: verify the banner directly.
+        if telnet_is_openocd("127.0.0.1", spec.telnet_port) {
             return Ok(OpenOcdHandle {
                 local_child: None,
                 tunnel: None,
                 ssh_target: None,
                 remote_pid_file: None,
                 spawned: false,
+                local_gdb_port: spec.gdb_port,
+                local_telnet_port: spec.telnet_port,
+                remote_target: None,
             });
         }
         return Err(ElabError::msg(format!(
@@ -293,13 +370,13 @@ pub fn ensure_running(spec: &OpenOcdSpec) -> Result<OpenOcdHandle> {
                     "openocd failed to start on {t}; see {log} on that host"
                 )));
             }
-            // Tunnel local spec ports -> remote ports.
-            let local_gdb = spec.gdb_port;
-            let local_telnet = spec.telnet_port;
+            // Reserve free local ports and tunnel them to the remote server.
+            let local_gdb = reserve_free_port()?;
+            let local_telnet = reserve_free_port()?;
             let child = Command::new("ssh")
                 .arg("-N")
                 .arg("-L")
-                .arg(format!("{}:127.0.0.1:{}", local_gdb, remote_gdb))
+                .arg(format!("{}:127.0.0.1:{}", local_gdb, spec.gdb_port))
                 .arg("-L")
                 .arg(format!("{}:127.0.0.1:{}", local_telnet, spec.telnet_port))
                 .arg(t)
@@ -313,6 +390,9 @@ pub fn ensure_running(spec: &OpenOcdSpec) -> Result<OpenOcdHandle> {
                 ssh_target: Some(t.clone()),
                 remote_pid_file: Some(pid_file.to_string()),
                 spawned: true,
+                local_gdb_port: local_gdb,
+                local_telnet_port: local_telnet,
+                remote_target: Some(t.clone()),
             }
         }
         None => {
@@ -356,26 +436,32 @@ pub fn ensure_running(spec: &OpenOcdSpec) -> Result<OpenOcdHandle> {
                 ssh_target: None,
                 remote_pid_file: None,
                 spawned: true,
+                local_gdb_port: spec.gdb_port,
+                local_telnet_port: spec.telnet_port,
+                remote_target: None,
             }
         }
     };
 
     // 3. Wait until the ports actually accept connections.
+    wait_ports(handle.local_gdb_port, handle.local_telnet_port)?;
+    Ok(handle)
+}
+
+fn wait_ports(gdb_port: u16, telnet_port: u16) -> Result<()> {
     let deadline = Instant::now() + Duration::from_secs(15);
     loop {
-        if port_listening("127.0.0.1", spec.gdb_port, 500)
-            && port_listening("127.0.0.1", spec.telnet_port, 500)
+        if port_listening("127.0.0.1", gdb_port, 500)
+            && port_listening("127.0.0.1", telnet_port, 500)
         {
-            break;
+            return Ok(());
         }
         if Instant::now() > deadline {
             return Err(ElabError::msg(format!(
                 "openocd started but ports {}/{} never opened",
-                spec.gdb_port, spec.telnet_port
+                gdb_port, telnet_port
             )));
         }
         std::thread::sleep(Duration::from_millis(250));
     }
-    let _ = remote_gdb;
-    Ok(handle)
 }
