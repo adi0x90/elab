@@ -3,6 +3,7 @@
 pub mod device;
 pub mod evidence;
 pub mod image;
+pub mod openocd;
 pub mod runner;
 pub mod spec;
 pub mod value;
@@ -25,6 +26,8 @@ pub enum ElabError {
     Yaml(#[from] serde_yaml::Error),
     #[error("toml: {0}")]
     Toml(#[from] toml::de::Error),
+    #[error("toml ser: {0}")]
+    TomlSer(#[from] toml::ser::Error),
     #[error("json: {0}")]
     Json(#[from] serde_json::Error),
     #[error("machine: {0}")]
@@ -49,12 +52,25 @@ pub trait Machine {
     fn write_memory(&mut self, addr: u64, bytes: &[u8]) -> Result<()>;
     fn reset(&mut self, halt: bool) -> Result<()>;
     fn detach(&mut self) -> Result<()>;
+    /// Bound blocking waits (stop/resume) so a hung target cannot hang the
+    /// run. Backends that cannot honor it ignore this.
+    fn set_timeout_ms(&mut self, _ms: u64) {}
+    /// Read raw flash through the probe's flash driver (OpenOCD
+    /// `flash read_bank`). Works even when the CPU is halted with the cache
+    /// off. Backends without a flash driver return an error.
+    fn flash_read(&mut self, _offset: u64, _len: usize) -> Result<Vec<u8>> {
+        Err(ElabError::msg(
+            "flash_read is not supported by this transport (needs OpenOCD)",
+        ))
+    }
 }
 
 /// A serial/UART link used for witnesses and console-driven phases.
 pub trait SerialLink {
     fn expect(&mut self, pattern: &str, timeout: std::time::Duration) -> Result<String>;
     fn send(&mut self, text: &str) -> Result<()>;
+    /// Drop buffered bytes not yet consumed by `expect`.
+    fn flush_input(&mut self) {}
 }
 
 pub fn sha256_hex(bytes: &[u8]) -> String {

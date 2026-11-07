@@ -8,11 +8,42 @@ use elab_core::{ElabError, Machine, Result, Value};
 use regex::Regex;
 use std::io::{BufRead, BufReader, Write};
 use std::process::{Child, ChildStdin, ChildStdout, Command, Stdio};
+use std::sync::mpsc::{channel, Receiver};
+use std::thread;
+use std::time::Duration;
 
 pub struct Gdb {
     child: Child,
     stdin: ChildStdin,
-    reader: BufReader<ChildStdout>,
+    /// Lines arrive from a dedicated reader thread; `line()` bounds its wait
+    /// with the configured timeout so a hung target cannot hang the run.
+    lines: Receiver<String>,
+    timeout_ms: u64,
+    /// Optional OpenOCD telnet endpoint (host, port) for flash-driver
+    /// commands; set by the CLI when the spec configures openocd.
+    openocd_telnet: Option<(String, u16)>,
+}
+
+/// Drain `stdout` on a thread so the main thread can time out waiting for a
+/// line. The thread holds the reader for the process lifetime.
+fn start_reader(stdout: ChildStdout) -> Receiver<String> {
+    let (tx, rx) = channel();
+    thread::spawn(move || {
+        let mut reader = BufReader::new(stdout);
+        let mut s = String::new();
+        loop {
+            s.clear();
+            match reader.read_line(&mut s) {
+                Ok(0) | Err(_) => break,
+                Ok(_) => {
+                    if tx.send(s.trim_end().to_string()).is_err() {
+                        break;
+                    }
+                }
+            }
+        }
+    });
+    rx
 }
 
 struct Record {
@@ -51,7 +82,9 @@ impl Gdb {
         let mut gdb = Self {
             child,
             stdin,
-            reader: BufReader::new(stdout),
+            lines: start_reader(stdout),
+            timeout_ms: 10_000,
+            openocd_telnet: None,
         };
         gdb.cmd("-gdb-set pagination off")?;
         gdb.cmd("-gdb-set confirm off")?;
@@ -62,6 +95,80 @@ impl Gdb {
     pub fn connect(&mut self, endpoint: &str) -> Result<()> {
         self.cmd(&format!("-target-select extended-remote {endpoint}"))?;
         Ok(())
+    }
+
+    /// Attach the OpenOCD telnet endpoint used for flash-driver commands.
+    pub fn set_openocd_telnet(&mut self, host: &str, port: u16) {
+        self.openocd_telnet = Some((host.to_string(), port));
+    }
+
+    /// Read raw flash through OpenOCD's flash driver via `monitor flash
+    /// read_bank`. OpenOCD writes a temp file on its own host and elab reads
+    /// it back, so this works even when the CPU is halted with the cache off
+    /// (a plain memory read then returns unmapped bytes). Requires the telnet
+    /// port of the same OpenOCD for cleanup of the temp file.
+    fn flash_read_via_monitor(&mut self, offset: u64, len: usize) -> Result<Vec<u8>> {
+        use elab_core::openocd::Telnet;
+        let host = self
+            .openocd_telnet
+            .as_ref()
+            .map(|(h, _)| h.clone())
+            .unwrap_or_else(|| "127.0.0.1".to_string());
+        let port = self
+            .openocd_telnet
+            .as_ref()
+            .map(|(_, p)| *p)
+            .unwrap_or(4444);
+        let ts = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_millis())
+            .unwrap_or(0);
+        let tmp = format!("/tmp/elab-flash-{ts}.bin");
+        let mut t = Telnet::connect(&host, port, 5000)?;
+        // Bank 0 = main flash on all supported targets.
+        let out = t.cmd(
+            &format!("flash read_bank 0 {tmp} 0x{offset:x} 0x{len:x}"),
+            60_000,
+        )?;
+        if out.contains("error") || out.contains("Error") {
+            let _ = t.cmd(&format!("exec rm -f {tmp}"), 5000);
+            return Err(ElabError::Machine(format!(
+                "flash read_bank failed: {}",
+                out.trim()
+            )));
+        }
+        // Read the file from wherever OpenOCD ran, then clean it up.
+        let bytes = if host == "127.0.0.1" {
+            std::fs::read(&tmp)
+                .map_err(|e| ElabError::Machine(format!("flash dump file {tmp} unreadable: {e}")))?
+        } else {
+            // Remote OpenOCD: scp the file back, read, remove.
+            let local = std::env::temp_dir().join(format!("elab-flash-{ts}.bin"));
+            let st = Command::new("scp")
+                .arg("-q")
+                .arg(format!("{host}:{tmp}"))
+                .arg(&local)
+                .status()
+                .map_err(|e| ElabError::Machine(format!("scp flash dump: {e}")))?;
+            if !st.success() {
+                return Err(ElabError::Machine(format!(
+                    "scp flash dump {host}:{tmp} failed"
+                )));
+            }
+            let b = std::fs::read(&local).map_err(|e| {
+                ElabError::Machine(format!("flash dump file {tmp} unreadable: {e}"))
+            })?;
+            let _ = std::fs::remove_file(&local);
+            b
+        };
+        let _ = t.cmd(&format!("exec rm -f {tmp}"), 5000);
+        if bytes.len() != len {
+            return Err(ElabError::Machine(format!(
+                "flash read_bank returned {} bytes, expected {len}",
+                bytes.len()
+            )));
+        }
+        Ok(bytes)
     }
 
     pub fn stop_at(&mut self, addr: u64, cond: Option<&str>) -> Result<u64> {
@@ -141,7 +248,23 @@ impl Gdb {
         let _ = self.cmd("-target-detach");
         let _ = self.stdin.write_all(b"-gdb-exit\n");
         let _ = self.stdin.flush();
-        let _ = self.child.wait();
+        // Bound the exit wait: gdb can wedge waiting on a dead remote, and
+        // an unbounded child.wait() hangs the whole run.
+        let deadline = std::time::Instant::now() + Duration::from_millis(self.timeout_ms);
+        loop {
+            match self.child.try_wait() {
+                Ok(Some(_)) => break,
+                Ok(None) => {
+                    if std::time::Instant::now() >= deadline {
+                        let _ = self.child.kill();
+                        let _ = self.child.wait();
+                        break;
+                    }
+                    std::thread::sleep(Duration::from_millis(50));
+                }
+                Err(_) => break,
+            }
+        }
         Ok(())
     }
 
@@ -171,15 +294,17 @@ impl Gdb {
     }
 
     fn line(&mut self) -> Result<String> {
-        let mut s = String::new();
-        let n = self
-            .reader
-            .read_line(&mut s)
-            .map_err(|e| ElabError::Machine(format!("gdb read: {e}")))?;
-        if n == 0 {
-            return Err(ElabError::Machine("gdb closed the connection".into()));
+        use std::sync::mpsc::RecvTimeoutError;
+        let timeout = Duration::from_millis(self.timeout_ms);
+        match self.lines.recv_timeout(timeout) {
+            Ok(s) => Ok(s),
+            Err(RecvTimeoutError::Timeout) => Err(ElabError::Machine(format!(
+                "gdb produced no output within {timeout:?} (hung target or wedged server?)"
+            ))),
+            Err(RecvTimeoutError::Disconnected) => {
+                Err(ElabError::Machine("gdb closed the connection".into()))
+            }
         }
-        Ok(s.trim_end().to_string())
     }
 }
 
@@ -201,6 +326,12 @@ impl Machine for Gdb {
     }
     fn detach(&mut self) -> Result<()> {
         Gdb::detach(self)
+    }
+    fn set_timeout_ms(&mut self, ms: u64) {
+        self.timeout_ms = ms;
+    }
+    fn flash_read(&mut self, offset: u64, len: usize) -> Result<Vec<u8>> {
+        Gdb::flash_read_via_monitor(self, offset, len)
     }
 }
 

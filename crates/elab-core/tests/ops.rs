@@ -1,6 +1,7 @@
 use elab_core::{
     run, Device, ElabError, Evidence, ExperimentSpec, Machine, Op, Phase, Result, Transport, Value,
 };
+use std::collections::HashMap;
 
 struct Mock {
     read: Vec<u8>,
@@ -79,6 +80,141 @@ entry = { addr = 0x1000 }
     let dump = ev.dir().join("attachments/dump.bin");
     assert_eq!(std::fs::read(&dump).unwrap(), vec![0xAA, 0xBB, 0xAA, 0xBB]);
 
+    let _ = ev.finish(true, serde_json::json!({}));
+    let _ = std::fs::remove_dir_all(dir);
+}
+
+/// A profile with no [published] still supports published ops when x, count
+/// and channels are all defined inline.
+#[test]
+fn inline_published_channels_override_profile() {
+    let device: Device = toml::from_str(
+        r#"
+name = "mock"
+[image]
+[stops]
+sample = { addr = 0x3000 }
+"#,
+    )
+    .unwrap();
+
+    let spec = ExperimentSpec {
+        name: "inline".into(),
+        device: "mock.toml".into(),
+        transport: Transport::default(),
+        phases: vec![Phase {
+            name: "p".into(),
+            ops: vec![
+                Op::Published {
+                    stop: "sample".into(),
+                    match_expr: "0x10".into(),
+                    tol: 1e-4,
+                    tries: 3,
+                    timeout_ms: None,
+                    x: Some("0x10".into()),
+                    count: Some("0x11".into()),
+                    channels: Some(vec![
+                        elab_core::spec::InlineChannel {
+                            name: "alpha".into(),
+                            value: "0x12".into(),
+                        },
+                        elab_core::spec::InlineChannel {
+                            name: "beta".into(),
+                            value: "0x13".into(),
+                        },
+                    ]),
+                },
+                Op::Expect {
+                    fields: HashMap::from([
+                        ("alpha".to_string(), 18.0),
+                        ("beta".to_string(), 19.0),
+                    ]),
+                },
+            ],
+        }],
+    };
+
+    let mut mock = Mock {
+        read: vec![],
+        reset_halt: None,
+    };
+    let dir = std::env::temp_dir().join(format!("elab-inline-{}", std::process::id()));
+    let mut ev = Evidence::create(&dir, "inline").unwrap();
+    let result = run(&spec, &device, &mut mock, None, &mut ev).unwrap();
+    assert!(result.ok);
+    assert_eq!(
+        result.channels,
+        vec!["alpha".to_string(), "beta".to_string()]
+    );
+    assert_eq!(result.rows.len(), 1);
+    let _ = ev.finish(true, serde_json::json!({}));
+    let _ = std::fs::remove_dir_all(dir);
+}
+
+/// A profile with symbol-expression stops resolves them through the machine.
+#[test]
+fn symbol_stop_addresses_resolve_via_machine() {
+    use std::collections::HashMap;
+    struct SymbolMock {
+        expect_expr: String,
+    }
+    impl Machine for SymbolMock {
+        fn stop(&mut self, addr: u64, _: Option<&str>) -> Result<u64> {
+            Ok(addr)
+        }
+        fn evaluate(&mut self, expr: &str) -> Result<Value> {
+            self.expect_expr = expr.to_string();
+            if expr.contains("(unsigned long)") {
+                return Ok(Value::UInt(0x4200_9170));
+            }
+            Ok(Value::UInt(0))
+        }
+        fn read_memory(&mut self, _: u64, _: usize) -> Result<Vec<u8>> {
+            Ok(vec![0])
+        }
+        fn write_memory(&mut self, _: u64, _: &[u8]) -> Result<()> {
+            Ok(())
+        }
+        fn reset(&mut self, _: bool) -> Result<()> {
+            Ok(())
+        }
+        fn detach(&mut self) -> Result<()> {
+            Ok(())
+        }
+    }
+    let device: Device = toml::from_str(
+        r#"
+name = "mock"
+[image]
+[stops]
+measure = { addr = "&sensor_task" }
+"#,
+    )
+    .unwrap();
+    let spec = ExperimentSpec {
+        name: "symbol".into(),
+        device: "mock.toml".into(),
+        transport: Transport::default(),
+        phases: vec![Phase {
+            name: "p".into(),
+            ops: vec![Op::Stop {
+                at: "measure".into(),
+                when: None,
+                timeout_ms: None,
+            }],
+        }],
+    };
+    let mut mock = SymbolMock {
+        expect_expr: String::new(),
+    };
+    let dir = std::env::temp_dir().join(format!("elab-symbol-{}", std::process::id()));
+    let mut ev = Evidence::create(&dir, "symbol").unwrap();
+    run(&spec, &device, &mut mock, None, &mut ev).unwrap();
+    assert!(
+        mock.expect_expr.contains("(unsigned long)"),
+        "symbol address must be evaluated as an expression, got {:?}",
+        mock.expect_expr
+    );
     let _ = ev.finish(true, serde_json::json!({}));
     let _ = std::fs::remove_dir_all(dir);
 }

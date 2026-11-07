@@ -83,6 +83,31 @@ impl SerialLink for Serial {
             .flush()
             .map_err(|e| ElabError::Serial(format!("flush: {e}")))
     }
+
+    fn flush_input(&mut self) {
+        // Discard application-level bytes that expect() has not consumed.
+        self.buf.clear();
+        // Drain whatever the OS driver already delivered; the port timeout
+        // bounds this loop when the driver buffer is empty.
+        let mut chunk = [0u8; 512];
+        loop {
+            match self.port.read(&mut chunk) {
+                Ok(0) => break,
+                Ok(_) => continue,
+                Err(e)
+                    if matches!(
+                        e.kind(),
+                        std::io::ErrorKind::TimedOut
+                            | std::io::ErrorKind::WouldBlock
+                            | std::io::ErrorKind::Interrupted
+                    ) =>
+                {
+                    break
+                }
+                Err(_) => break,
+            }
+        }
+    }
 }
 
 #[cfg(all(test, unix))]

@@ -5,23 +5,35 @@ use elab_core::{
 };
 use serde_json::json;
 use std::path::{Path, PathBuf};
+use toml;
 
 const OPS_HELP: &str = r#"EXPERIMENT OPS
 
-  stop           { op: stop, at: <stop>, when: "<cond>" }
+  stop           { op: stop, at: <stop>, when: "<cond>", timeout_ms }
   capture        { op: capture, name: <var>, expr: "<expr>" }
-  write          { op: write, at: "<addr>", kind: f32|f64|i8|u8|u32|i32, value: "<expr>" }
-  published      { op: published, stop: <stop>, match: "<expr>", tol, tries }
+  write          { op: write, at: "<addr>", kind: f32|f64|i8|u8|u32|i32,
+                   value: "<expr>" }            # scalar, or:
+                 { op: write, at: "<addr>", kind: u8|u32, values: ["..", ..] }
+  published      { op: published, stop: <stop>, match: "<expr>", tol, tries,
+                   timeout_ms, x, count, channels: [{name, value}, ..] }
   expect         { op: expect, fields: { <channel>: <float>, ... } }
   serial_expect  { op: serial_expect, pattern: "<text>", timeout_ms }
   serial_send    { op: serial_send, text: "<text>" }
+  serial_flush   { op: serial_flush }          # discard buffered serial input
   reset          { op: reset, halt: true|false }        # monitor reset / core reset
   power_cycle    { op: power_cycle }                    # profile [power] cycle argv
   attachment     { op: attachment, name: <name>, at: "<addr>", len: <bytes> }
+  flash_read     { op: flash_read, name: <name>, offset: "<addr>", len: <bytes> }
+                 # raw flash via OpenOCD's flash driver (works even when the
+                 # CPU is halted with the cache off)
+
+Addresses in stop profiles, [image] verify/model and the ops above accept a
+number (0x420094a2) or an ELF symbol expression (&symbol, resolved by GDB).
 
 DEVICE PROFILE (TOML)
 
   [image]        elf_sha256, verify, [image.model]
+                 verify.addr/model.addr may be a symbol expression.
   [published]    x, count
   [[channels]]   name, value
   [power]        cycle = ["argv", "…"]
@@ -29,9 +41,24 @@ DEVICE PROFILE (TOML)
 
 TRANSPORT
 
-  transport.gdb    { endpoint, elf }
+  transport.gdb    { endpoint, elf, timeout_ms }   # default timeout_ms 10000
   transport.probe  { chip, elf, timeout_ms }   # build with --features probe
   transport.serial { port, baud }
+  transport.openocd { config: ["board/x.cfg"], host?, user?,
+                      gdb_port: 3333, telnet_port: 4444, start: true|false }
+                 # start: true -> elab launches OpenOCD (locally or over ssh
+                 # to host) and tunnels the ports; it detects an existing
+                 # OpenOCD on the port and reuses it. Errors clearly if a
+                 # serial tool (picocom, minicom) holds the UART device.
+
+COMMANDS
+
+  elab run <SPEC> [--runs DIR]     execute phases and save evidence
+  elab check <SPEC>                validate spec + profile, no hardware
+  elab stamp <SPEC>                write the transport ELF hash into the profile
+  elab verify <RUN_DIR>            re-check recorded expectations
+  elab devices <DIR>               list TOML device profiles
+  elab ops                         print this reference
 
 ELF paths are relative to the working directory. See README.md and DESIGN.md.
 "#;
@@ -42,7 +69,7 @@ ELF paths are relative to the working directory. See README.md and DESIGN.md.
     version,
     about = "Phased experiments on embedded targets",
     long_about = "elab runs phased experiments against an embedded target.\n\nIt holds one GDB/MI, probe-rs, or serial session, executes YAML phases, checks configured image identity, attempts write restoration on execution errors, and records JSONL evidence.",
-    after_help = "ELF paths are relative to the working directory.\n\nExamples:\n  elab devices devices\n  elab run experiments/capture.yaml\n  elab verify runs/capture-<epoch_ms>\n  elab ops"
+    after_help = "ELF paths are relative to the working directory.\n\nExamples:\n  elab devices devices\n  elab check experiments/capture.yaml\n  elab run experiments/capture.yaml\n  elab verify runs/capture-<epoch_ms>\n  elab stamp experiments/capture.yaml\n  elab ops"
 )]
 struct Cli {
     #[command(subcommand)]
@@ -76,6 +103,24 @@ enum Cmd {
         #[arg(value_name = "DIR")]
         dir: PathBuf,
     },
+    /// Validate an experiment + profile without touching hardware.
+    #[command(
+        long_about = "Load the experiment spec and its device profile, resolve ELF paths and hashes, and report errors. No target is opened.\n\nUseful before hardware is connected, and for iterating on YAML/TOML syntax without a board."
+    )]
+    Check {
+        /// Path to the experiment YAML.
+        #[arg(value_name = "SPEC")]
+        spec: PathBuf,
+    },
+    /// Stamp the profile's [image] elf_sha256 from the transport ELF.
+    #[command(
+        long_about = "Compute the SHA-256 of the experiment's transport ELF and write it into the device profile's [image] elf_sha256.\n\nRun this after a firmware rebuild so the identity check tracks the current build."
+    )]
+    Stamp {
+        /// Path to the experiment YAML.
+        #[arg(value_name = "SPEC")]
+        spec: PathBuf,
+    },
     /// Print the experiment op and profile reference.
     Ops,
 }
@@ -93,6 +138,8 @@ fn dispatch(cli: Cli) -> Result<()> {
         Cmd::Run { spec, runs } => run_cmd(spec, runs),
         Cmd::Verify { run } => verify_cmd(run),
         Cmd::Devices { dir } => devices_cmd(dir),
+        Cmd::Check { spec } => check_cmd(spec),
+        Cmd::Stamp { spec } => stamp_cmd(spec),
         Cmd::Ops => {
             print!("{OPS_HELP}");
             Ok(())
@@ -100,7 +147,10 @@ fn dispatch(cli: Cli) -> Result<()> {
     }
 }
 
-fn machine_for(spec: &ExperimentSpec, device: &Device) -> Result<Box<dyn Machine>> {
+fn machine_for(
+    spec: &ExperimentSpec,
+    device: &Device,
+) -> Result<(Box<dyn Machine>, Option<elab_core::openocd::OpenOcdHandle>)> {
     if let Some(p) = &spec.transport.probe {
         #[cfg(feature = "probe")]
         {
@@ -108,7 +158,7 @@ fn machine_for(spec: &ExperimentSpec, device: &Device) -> Result<Box<dyn Machine
             if let Some(elf) = &p.elf {
                 check_image(device, Path::new(elf), &mut m)?;
             }
-            return Ok(Box::new(m));
+            return Ok((Box::new(m), None));
         }
         #[cfg(not(feature = "probe"))]
         {
@@ -119,13 +169,22 @@ fn machine_for(spec: &ExperimentSpec, device: &Device) -> Result<Box<dyn Machine
         }
     }
     if let Some(g) = &spec.transport.gdb {
+        // Start or verify OpenOCD first, when the spec asks for one. The
+        // handle lives until run_cmd drops it after the run; an existing
+        // server is left alone.
+        let mut ocd_handle = None;
         let elf = PathBuf::from(&g.elf);
         let mut gdb = elab_gdb::Gdb::new(elf.to_str().unwrap_or(&g.elf))?;
+        if let Some(o) = &spec.transport.openocd {
+            let h = elab_core::openocd::ensure_running(o)?;
+            gdb.set_openocd_telnet("127.0.0.1", o.telnet_port);
+            ocd_handle = Some(h);
+        }
         gdb.connect(&g.endpoint)?;
         check_image(device, &elf, &mut gdb)?;
-        return Ok(Box::new(gdb));
+        return Ok((Box::new(gdb), ocd_handle));
     }
-    Ok(Box::new(elab_core::NoMachine))
+    Ok((Box::new(elab_core::NoMachine), None))
 }
 
 fn run_cmd(spec_path: PathBuf, runs: PathBuf) -> Result<()> {
@@ -144,7 +203,7 @@ fn run_cmd(spec_path: PathBuf, runs: PathBuf) -> Result<()> {
         std::thread::sleep(std::time::Duration::from_millis(1500));
     }
 
-    let mut machine = machine_for(&spec, &device)?;
+    let (mut machine, _ocd) = machine_for(&spec, &device)?;
 
     let mut ev = Evidence::create(&runs, &spec.name)?;
     let result = run(
@@ -154,17 +213,23 @@ fn run_cmd(spec_path: PathBuf, runs: PathBuf) -> Result<()> {
         serial.as_mut().map(|s| s as &mut dyn SerialLink),
         &mut ev,
     );
-    let _ = machine.detach();
-    if let Some(mut s) = serial {
-        s.close();
-    }
     let result = match result {
         Ok(r) => r,
         Err(e) => {
+            // Detach after recording the failure so the error is reported
+            // even if the transport is wedged.
+            let _ = machine.detach();
+            if let Some(mut s) = serial {
+                s.close();
+            }
             let _ = ev.finish(false, json!({"error": e.to_string()}));
             return Err(e);
         }
     };
+    let _ = machine.detach();
+    if let Some(mut s) = serial {
+        s.close();
+    }
     print_table(&result);
 
     let mut manifest = json!({
@@ -177,6 +242,7 @@ fn run_cmd(spec_path: PathBuf, runs: PathBuf) -> Result<()> {
         "elab_version": env!("CARGO_PKG_VERSION"),
         "rows": result.rows,
         "failures": result.failures,
+        "attachments": result.attachments,
     });
     if let Some(g) = &spec.transport.gdb {
         manifest["elf"] = json!(g.elf);
@@ -210,6 +276,27 @@ fn print_table(r: &elab_core::RunResult) {
             print!(" {:>12.9}", v);
         }
         println!(" {:>8}", row.count);
+    }
+    for a in &r.attachments {
+        match &a.hex {
+            Some(h) => println!("{:<10} @{} len={} {}", a.phase, a.addr, a.len, hex_short(h)),
+            None => println!(
+                "{:<10} @{} len={} sha256={}",
+                a.phase,
+                a.addr,
+                a.len,
+                &a.sha256[..16]
+            ),
+        }
+    }
+}
+
+/// Short hex string for the table (elide the middle of long runs).
+fn hex_short(h: &str) -> String {
+    if h.len() <= 32 {
+        h.to_string()
+    } else {
+        format!("{}…{}", &h[..16], &h[h.len() - 16..])
     }
 }
 
@@ -260,8 +347,54 @@ fn devices_cmd(dir: PathBuf) -> Result<()> {
     paths.sort();
     for p in paths {
         let d = Device::load(&p)?;
-        println!("{:<12} {}  ({})", d.name, d.description, p.display());
+        println!("{:<20} {}", d.name, p.display());
     }
+    Ok(())
+}
+
+fn check_cmd(spec_path: PathBuf) -> Result<()> {
+    let spec = ExperimentSpec::load(&spec_path)?;
+    let base = spec_path.parent().unwrap_or_else(|| Path::new("."));
+    let device_path = base.join(&spec.device);
+    let device = Device::load(&device_path)?;
+    // ELF reference check: if the transport supplies one, it must exist.
+    let elf = match &spec.transport.gdb {
+        Some(g) => Some(g.elf.clone()),
+        None => spec.transport.probe.as_ref().and_then(|p| p.elf.clone()),
+    };
+    if let Some(elf) = &elf {
+        let elf_path = PathBuf::from(&elf);
+        if !elf_path.exists() {
+            return Err(ElabError::msg(format!("ELF path '{}' does not exist", elf)));
+        }
+    }
+    println!(
+        "spec ok: {} phases, device profile '{}' ok, ELF {:?}",
+        spec.phases.len(),
+        device.name,
+        elf
+    );
+    Ok(())
+}
+
+fn stamp_cmd(spec_path: PathBuf) -> Result<()> {
+    let spec = ExperimentSpec::load(&spec_path)?;
+    let base = spec_path.parent().unwrap_or_else(|| Path::new("."));
+    let device_path = base.join(&spec.device);
+    let elf = match &spec.transport.gdb {
+        Some(g) => g.elf.clone(),
+        None => match spec.transport.probe.as_ref().and_then(|p| p.elf.clone()) {
+            Some(e) => e,
+            None => return Err(ElabError::msg("no transport ELF to stamp from")),
+        },
+    };
+    let elf_bytes = std::fs::read(&elf)?;
+    let hash = sha256_hex(&elf_bytes);
+    let mut device = Device::load(&device_path)?;
+    device.image.elf_sha256 = Some(hash.clone());
+    let out = toml::to_string_pretty(&device)?;
+    std::fs::write(&device_path, out)?;
+    println!("stamped {} into {}", hash, device_path.display());
     Ok(())
 }
 

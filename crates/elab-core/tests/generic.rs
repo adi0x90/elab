@@ -72,6 +72,10 @@ pub = { addr = 0x1000 }
                     match_expr: "${target}".into(),
                     tol: 1e-6,
                     tries: 2,
+                    timeout_ms: None,
+                    x: None,
+                    count: None,
+                    channels: None,
                 },
                 Op::Expect {
                     fields: HashMap::from([

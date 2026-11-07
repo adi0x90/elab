@@ -445,6 +445,7 @@ dependencies = [
  "elab-probe",
  "elab-serial",
  "serde_json",
+ "toml",
 ]
 
 [[package]]

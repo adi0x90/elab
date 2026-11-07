@@ -38,17 +38,18 @@ pub fn check_image(device: &Device, elf: &Path, machine: &mut dyn Machine) -> Re
         }
     }
     for v in &device.image.verify {
-        let live = machine.read_memory(v.addr, v.n)?;
-        let file = elf_bytes_at(elf, v.addr, v.n)?;
+        let addr = v.addr.resolve(machine)?;
+        let live = machine.read_memory(addr, v.n)?;
+        let file = elf_bytes_at(elf, addr, v.n)?;
         if live != file {
             return Err(ElabError::msg(format!(
-                "live code at 0x{:x} does not match the ELF (wrong image?)",
-                v.addr
+                "live memory at 0x{addr:x} does not match the ELF (wrong image?)"
             )));
         }
     }
     if let Some(m) = &device.image.model {
-        let live = machine.read_memory(m.addr, m.size)?;
+        let addr = m.addr.resolve(machine)?;
+        let live = machine.read_memory(addr, m.size)?;
         let got = sha256_hex(&live);
         if got != m.sha256 {
             return Err(ElabError::msg(format!(

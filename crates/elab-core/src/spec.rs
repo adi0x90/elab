@@ -20,12 +20,54 @@ pub struct Transport {
     pub probe: Option<ProbeSpec>,
     #[serde(default)]
     pub serial: Option<SerialSpec>,
+    /// OpenOCD server lifecycle. When present, elab verifies an OpenOCD is
+    /// listening (or starts one with `start: true`, locally or over ssh) and
+    /// stops the instance it started after the run.
+    #[serde(default)]
+    pub openocd: Option<OpenOcdSpec>,
+}
+
+/// OpenOCD server management for an experiment.
+#[derive(Debug, Clone, Deserialize)]
+pub struct OpenOcdSpec {
+    /// Config arguments passed to openocd, e.g.
+    /// ["board/esp32c6-builtin.cfg"] or ["-f", "target/esp32c6.cfg", "-c",
+    /// "adapter speed 20000"]. Passed verbatim after `-c`-joins.
+    pub config: Vec<String>,
+    /// Host running OpenOCD. Omit for local. With `start: true` elab runs
+    /// openocd over ssh on this host and tunnels the gdb/telnet ports back.
+    #[serde(default)]
+    pub host: Option<String>,
+    #[serde(default)]
+    pub user: Option<String>,
+    #[serde(default = "default_gdb_port")]
+    pub gdb_port: u16,
+    #[serde(default = "default_telnet_port")]
+    pub telnet_port: u16,
+    /// Start OpenOCD automatically and stop it after the run. When false,
+    /// elab only verifies a server is already listening.
+    #[serde(default)]
+    pub start: bool,
+}
+
+fn default_gdb_port() -> u16 {
+    3333
+}
+fn default_telnet_port() -> u16 {
+    4444
 }
 
 #[derive(Debug, Clone, Deserialize)]
 pub struct GdbSpec {
     pub endpoint: String,
     pub elf: String,
+    /// Wait bound for GDB/MI responses (stop/resume/eval), milliseconds.
+    #[serde(default = "default_gdb_timeout_ms")]
+    pub timeout_ms: u64,
+}
+
+fn default_gdb_timeout_ms() -> u64 {
+    10_000
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -58,6 +100,9 @@ pub enum Op {
         at: String,
         #[serde(default)]
         when: Option<String>,
+        /// Bound this stop's wait in milliseconds (overrides the transport).
+        #[serde(default)]
+        timeout_ms: Option<u64>,
     },
     Capture {
         name: String,
@@ -66,7 +111,13 @@ pub enum Op {
     Write {
         at: String,
         kind: String,
-        value: String,
+        /// Single scalar value.
+        #[serde(default)]
+        value: Option<String>,
+        /// Bulk write: values are encoded with `kind` and concatenated,
+        /// saved/restored and read back as one block.
+        #[serde(default)]
+        values: Option<Vec<String>>,
     },
     Published {
         stop: String,
@@ -76,6 +127,16 @@ pub enum Op {
         tol: f64,
         #[serde(default = "default_tries")]
         tries: usize,
+        /// Bound each stop/wait in milliseconds (overrides the transport).
+        #[serde(default)]
+        timeout_ms: Option<u64>,
+        /// Inline sample definition overriding the profile's [published].
+        #[serde(default)]
+        x: Option<String>,
+        #[serde(default)]
+        count: Option<String>,
+        #[serde(default)]
+        channels: Option<Vec<InlineChannel>>,
     },
     Expect {
         fields: HashMap<String, f64>,
@@ -88,6 +149,8 @@ pub enum Op {
     SerialSend {
         text: String,
     },
+    /// Discard buffered serial input not yet consumed by serial_expect.
+    SerialFlush,
     /// Reset the core through the debug transport. `halt: true` keeps it halted.
     Reset {
         #[serde(default)]
@@ -101,6 +164,21 @@ pub enum Op {
         at: String,
         len: usize,
     },
+    /// Read raw flash through OpenOCD's flash driver (works even when the
+    /// CPU is halted with the cache off) and record it as an attachment.
+    FlashRead {
+        name: String,
+        /// Flash offset: number or ELF symbol expression.
+        offset: String,
+        len: usize,
+    },
+}
+
+/// A channel defined inline in a `published` op instead of the profile.
+#[derive(Debug, Clone, Deserialize)]
+pub struct InlineChannel {
+    pub name: String,
+    pub value: String,
 }
 
 fn default_tol() -> f64 {
