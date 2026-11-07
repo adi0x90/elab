@@ -1,0 +1,16 @@
+name = "esp32c6-jtag-l04"
+description = "jtag-l04 nn live-edit firmware on ESP32-C6"
+endian = "little"
+
+[image]
+elf_sha256 = "9cf859b2f966b21ec6c8d3b31e15cf733cbfb8fe17e31fd52c18e066f15d19d4"
+# Live flash image identity: app_elf_sha256 lives in esp_app_desc (flash
+# rodata); compare all 32 bytes with the ELF's bytes. Symbol expression
+# resolves at run time via GDB, so it never goes stale across rebuilds.
+verify = [{ addr = "&esp_app_desc.app_elf_sha256", n = 32 }]
+
+[stops]
+# Conditional measurement stop used by the nn experiments.
+measure = { addr = 0x420094a2, cond = "$s0 == 20" }
+# Symbol-address stop: resolved via GDB, stays valid across rebuilds.
+infer = { addr = "&nn_infer" }

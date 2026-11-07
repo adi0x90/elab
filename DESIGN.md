@@ -50,9 +50,13 @@ Checks are only as strong as the supplied profile. An empty image section skips 
 
 The GDB backend starts one MI session and uses temporary hardware breakpoints. Its parser covers the records used by this tool, rather than the entire MI grammar. It currently blocks while waiting for responses or a target stop; the remote timeout setting is not an overall experiment deadline. The stop and reset paths use OpenOCD monitor commands.
 
-The serial backend reads bytes until a literal UTF-8 pattern matches. It consumes bytes through the match and keeps the suffix. It does not timestamp individual incoming bytes or discard output automatically on reset, and the receive buffer has no size limit.
+The GDB backend can read raw flash via the OpenOCD flash driver through the `flash_read` operation. It issues `flash read_bank` over OpenOCD's telnet port, dumps to a temporary file on the OpenOCD host, and copies the file back when OpenOCD runs remotely. This path works when the core is halted with the cache off, where memory-mapped reads return unmapped bytes. It requires bank 0 to be the target's main flash.
 
-The probe-rs backend attaches to core zero and has a timeout for halt operations. Conditional stops and symbol evaluation are unsupported. It is optional in the CLI so the default installation does not need probe-rs.
+When the experiment configures `transport.openocd`, elab manages the OpenOCD server lifecycle. It detects an existing OpenOCD by checking the configured ports and confirming the telnet banner. If no server is listening and `start: true`, elab launches openocd locally or over ssh, tunnels the GDB and telnet ports back when running remotely, and stops only the instance it spawned when the run ends. Before starting a local or remote OpenOCD, elab checks the serial device for other holders (for example `picocom` or `minicom` through `lsof`) and reports them instead of failing with an opaque device-busy error.
+
+The serial backend reads bytes until a literal UTF-8 pattern matches. It consumes bytes through the match and keeps the suffix. It does not timestamp individual incoming bytes or discard output automatically on reset, and the receive buffer has no size limit. A `serial_flush` operation discards buffered input not yet consumed, which lets an experiment drop bytes that predate a reset or write.
+
+The probe-rs backend attaches to core zero and has a timeout for halt operations. Conditional stops and symbol evaluation are unsupported. It is optional in the CLI so the default installation does not need probe-rs. The probe backend does not implement `flash_read`.
 
 ## Evidence
 

@@ -75,6 +75,14 @@ For sampled outputs, add a `[published]` section with `x` and `count` expression
 name: capture
 device: ../devices/example.toml
 transport:
+  # Optional: elab manages the OpenOCD server itself.
+  openocd:
+    config: ["board/stm32f4x.cfg"]   # config passed to openocd
+    start: true                      # start openocd if not already running
+    # host: "192.168.1.10"           # run openocd over ssh on a remote host
+    # user: "user"
+    # gdb_port: 3333
+    # telnet_port: 4444
   gdb:
     endpoint: "127.0.0.1:3333"
     elf: "firmware.elf"
@@ -96,9 +104,20 @@ Operations run in order. `${name}` substitutes a captured value into an expressi
 | `expect` | Compare fields from the latest published row with expected numbers. |
 | `serial_expect` | Wait for a literal substring in serial output. |
 | `serial_send` | Send text over the serial connection. |
+| `serial_flush` | Discard buffered serial input not yet consumed by `serial_expect`. |
 | `reset` | Reset the target, optionally leaving it halted. |
 | `power_cycle` | Execute the device profile's `[power] cycle` argument list. |
 | `attachment` | Save a memory range as a binary file with a recorded SHA-256. |
+| `flash_read` | Read raw flash through the debug server's flash driver (works even with cache off). |
+
+### OpenOCD lifecycle management
+
+When `transport.openocd` is configured, `elab` handles the debug server for you:
+
+- **Detects an existing instance** by listening on the configured `gdb_port`/`telnet_port`.
+- **Starts OpenOCD locally or over SSH** (via `host`/`user`) if `start: true` and no instance is running.
+- **Detects port holders**: identifies processes (like `picocom` or `minicom`) holding the UART device, preventing cryptic `permission denied` or `device busy` errors.
+- **Raw flash access**: supports the `flash_read` operation using OpenOCD's `flash read_bank` via telnet, allowing flash dumps even when the CPU is halted with the cache off.
 
 Writes support `f32`, `f64`, `i8`, `u8`, `u32`, and `i32`. The profile's `endian` setting controls byte order. Use values within the selected type's range; integer conversions currently narrow or saturate rather than rejecting every out-of-range value.
 

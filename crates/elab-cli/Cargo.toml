@@ -18,3 +18,4 @@ elab-gdb = { path = "../elab-gdb" }
 elab-serial = { path = "../elab-serial" }
 clap.workspace = true
 serde_json.workspace = true
+toml.workspace = true
