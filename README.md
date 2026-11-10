@@ -134,6 +134,36 @@ When `transport.openocd` is configured, `elab` handles the debug server for you:
 
 Writes support `f32`, `f64`, `i8`, `u8`, `u32`, and `i32`. The profile's `endian` setting controls byte order. Use values within the selected type's range; integer conversions currently narrow or saturate rather than rejecting every out-of-range value.
 
+## Watching values and backtraces
+
+The GDB backend supports one-shot hardware write watchpoints:
+
+```yaml
+- { op: watch, expr: "nn_act[4]" }
+- { op: capture, name: index, expr: "$a4" }
+- { op: backtrace }
+```
+
+`watch` halts to arm the watch, resumes execution, and returns halted at a
+GDB-reported value change. A store of the same value may not produce a reported
+stop. The watch is removed before the next operation. Cleanup is also attempted
+after execution errors, including GDB timeouts, and cleanup failures are
+reported. Software watchpoints and unrelated stops are rejected. Like `stop`,
+`watch` uses the GDB backend's output inactivity timeout (10 seconds by default).
+This is not an overall deadline: continuing GDB output can extend the wait.
+Use an external timeout for an overall limit and check debugger state after
+interruption.
+
+For a fixed array, use a GDB expression such as
+`*(unsigned char (*)[16]) &nn_act[0]`. Prefer fixed global locations; a local
+expression may go out of scope. A watch event preserves the PC, old/new values,
+and raw GDB/MI stop record. `backtrace` preserves the raw `-stack-list-frames`
+response. Other transports report these operations as unsupported.
+
+A debug reset flushes GDB's register cache before subsequent observations.
+These operations observe the firmware's own writes; they do not write the
+watched application data. Hardware watchpoints still change execution timing.
+
 ## Recorded results
 
 Each run creates a directory containing:
@@ -193,33 +223,3 @@ The repository includes a [CITATION.cff](CITATION.cff); GitHub renders a **Cite 
 ## License
 
 [MIT](LICENSE).
-
-### Watching a live value
-
-The GDB backend supports one-shot hardware write watchpoints:
-
-```yaml
-- { op: watch, expr: "nn_act[4]" }
-- { op: capture, name: index, expr: "$a4" }
-- { op: backtrace }
-```
-
-`watch` halts to arm the watch, resumes execution, and returns halted at a
-GDB-reported value change. A store of the same value may not produce a reported
-stop. The watch is removed before the next operation. Cleanup is also attempted
-after execution errors, including GDB timeouts, and cleanup failures are
-reported. Software watchpoints and unrelated stops are rejected. Like `stop`,
-`watch` uses the GDB backend's output inactivity timeout (10 seconds by default).
-This is not an overall deadline: continuing GDB output can extend the wait.
-Use an external timeout for an overall limit and check debugger state after
-interruption.
-
-For a fixed array, use a GDB expression such as
-`*(unsigned char (*)[16]) &nn_act[0]`. Prefer fixed global locations; a local
-expression may go out of scope. A watch event preserves the PC, old/new values,
-and raw GDB/MI stop record. `backtrace` preserves the raw `-stack-list-frames`
-response. Other transports report these operations as unsupported.
-
-A debug reset flushes GDB's register cache before subsequent observations.
-These operations observe the firmware's own writes; they do not write the
-watched application data. Hardware watchpoints still change execution timing.
