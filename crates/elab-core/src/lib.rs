@@ -44,8 +44,26 @@ impl ElabError {
 
 pub type Result<T> = std::result::Result<T, ElabError>;
 
+/// A real debugger stop, retaining its original MI record as evidence.
+#[derive(Debug, Clone, serde::Serialize)]
+pub struct WatchHit {
+    pub pc: u64,
+    pub reason: String,
+    pub old: String,
+    pub new: String,
+    pub raw: String,
+}
+
 /// A debug target: stops, typed reads/writes, memory access, reset.
 pub trait Machine {
+    fn watch(&mut self, _expr: &str) -> Result<WatchHit> {
+        Err(ElabError::msg(
+            "hardware watchpoints unsupported by this transport",
+        ))
+    }
+    fn backtrace(&mut self) -> Result<String> {
+        Err(ElabError::msg("backtrace unsupported by this transport"))
+    }
     fn stop(&mut self, addr: u64, cond: Option<&str>) -> Result<u64>;
     fn evaluate(&mut self, expr: &str) -> Result<Value>;
     fn read_memory(&mut self, addr: u64, len: usize) -> Result<Vec<u8>>;

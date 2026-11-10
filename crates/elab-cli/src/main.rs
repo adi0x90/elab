@@ -9,6 +9,8 @@ use toml;
 
 const OPS_HELP: &str = r#"EXPERIMENT OPS
 
+  watch          { op: watch, expr: "nn_act[4]" }     # one hardware value change; removes watch
+  backtrace      { op: backtrace }                   # raw GDB/MI stack frames
   stop           { op: stop, at: <stop>, when: "<cond>", timeout_ms }
   capture        { op: capture, name: <var>, expr: "<expr>" }
   write          { op: write, at: "<addr>", kind: f32|f64|i8|u8|u32|i32,

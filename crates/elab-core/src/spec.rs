@@ -96,6 +96,12 @@ pub struct Phase {
 #[derive(Debug, Clone, Deserialize)]
 #[serde(tag = "op", rename_all = "snake_case")]
 pub enum Op {
+    /// Stop on one hardware write-watchpoint value change, then remove the watch.
+    Watch {
+        expr: String,
+    },
+    /// Record the current stack using the debug transport.
+    Backtrace,
     Stop {
         at: String,
         #[serde(default)]

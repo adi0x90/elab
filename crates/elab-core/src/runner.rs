@@ -120,6 +120,19 @@ impl<'a> Runner<'a> {
 
     fn op(&mut self, phase: &str, op: &Op) -> Result<()> {
         match op {
+            Op::Watch { expr } => {
+                let expr = subst(expr, &self.vars);
+                let hit = self.machine.watch(&expr)?;
+                self.ev.event(json!({
+                    "event": "watch", "phase": phase, "expr": expr, "hit": hit
+                }))?;
+            }
+            Op::Backtrace => {
+                let raw = self.machine.backtrace()?;
+                self.ev.event(json!({
+                    "event": "backtrace", "phase": phase, "mi": raw
+                }))?;
+            }
             Op::Stop {
                 at,
                 when,

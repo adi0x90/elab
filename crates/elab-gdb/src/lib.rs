@@ -4,7 +4,7 @@
 //! session, inserts hardware temporary breakpoints, waits for `*stopped`, and
 //! evaluates GDB expressions (for example `*(float*)($sp+12)`).
 
-use elab_core::{ElabError, Machine, Result, Value};
+use elab_core::{ElabError, Machine, Result, Value, WatchHit};
 use regex::Regex;
 use std::io::{BufRead, BufReader, Write};
 use std::process::{Child, ChildStdin, ChildStdout, Command, Stdio};
@@ -215,6 +215,41 @@ impl Gdb {
         }
     }
 
+    /// One-shot write watch. Do not mistake an unrelated stop for a hit.
+    pub fn watch(&mut self, expr: &str) -> Result<WatchHit> {
+        self.cmd("-interpreter-exec console \"monitor halt\"")?;
+        let created = self.cmd(&format!("-break-watch \"{}\"", escape(expr)))?;
+        let number = nested(created.get("wpt"), "number")
+            .ok_or_else(|| ElabError::Machine(format!("no watchpoint number: {}", created.raw)))?;
+        if !number.bytes().all(|b| b.is_ascii_digit()) || number.is_empty() {
+            return Err(ElabError::Machine("invalid watchpoint number".into()));
+        }
+        let result = (|| {
+            let info = self.cmd(&format!("-break-info {number}"))?;
+            if !info.raw.contains("type=\"hw watchpoint\"") {
+                return Err(ElabError::Machine(format!(
+                    "hardware watchpoint required: {}",
+                    info.raw
+                )));
+            }
+            let stopped = self.resume()?;
+            watch_hit(&stopped, &number)
+        })();
+        // Delete only our own watch, including when continue fails or stops elsewhere.
+        let cleanup = self.cmd(&format!("-break-delete {number}"));
+        match (result, cleanup) {
+            (Ok(hit), Ok(_)) => Ok(hit),
+            (Err(e), Ok(_)) => Err(e),
+            (result, Err(e)) => Err(ElabError::Machine(format!(
+                "watch result {result:?}; could not delete watchpoint {number}: {e}"
+            ))),
+        }
+    }
+
+    pub fn backtrace(&mut self) -> Result<String> {
+        Ok(self.cmd("-stack-list-frames")?.raw)
+    }
+
     pub fn evaluate(&mut self, expr: &str) -> Result<Value> {
         let r = self.cmd(&format!("-data-evaluate-expression \"{}\"", escape(expr)))?;
         let raw = r
@@ -248,6 +283,7 @@ impl Gdb {
             "monitor reset run"
         };
         self.cmd(&format!("-interpreter-exec console \"{cmd}\""))?;
+        self.cmd("-interpreter-exec console \"maintenance flush register-cache\"")?;
         Ok(())
     }
 
@@ -316,6 +352,12 @@ impl Gdb {
 }
 
 impl Machine for Gdb {
+    fn watch(&mut self, expr: &str) -> Result<WatchHit> {
+        Gdb::watch(self, expr)
+    }
+    fn backtrace(&mut self) -> Result<String> {
+        Gdb::backtrace(self)
+    }
     fn stop(&mut self, addr: u64, cond: Option<&str>) -> Result<u64> {
         self.stop_at(addr, cond)
     }
@@ -423,4 +465,36 @@ fn unquote(v: &str) -> String {
     } else {
         v.to_string()
     }
+}
+
+fn nested(value: Option<&str>, key: &str) -> Option<String> {
+    let inner = value?.strip_prefix('{')?.strip_suffix('}')?;
+    fields(inner)
+        .into_iter()
+        .find(|(k, _)| k == key)
+        .map(|(_, v)| v)
+}
+
+fn watch_hit(record: &Record, number: &str) -> Result<WatchHit> {
+    if record.get("reason") != Some("watchpoint-trigger")
+        || nested(record.get("wpt"), "number").as_deref() != Some(number)
+    {
+        return Err(ElabError::Machine(format!(
+            "unexpected stop while watching {number}: {}",
+            record.raw
+        )));
+    }
+    let required = |value: Option<String>, field: &str| {
+        value.ok_or_else(|| {
+            ElabError::Machine(format!("watchpoint stop missing {field}: {}", record.raw))
+        })
+    };
+    let addr = required(nested(record.get("frame"), "addr"), "frame.addr")?;
+    Ok(WatchHit {
+        pc: Value::from_gdb(&addr).as_u64()?,
+        reason: "watchpoint-trigger".into(),
+        old: required(nested(record.get("value"), "old"), "value.old")?,
+        new: required(nested(record.get("value"), "new"), "value.new")?,
+        raw: record.raw.clone(),
+    })
 }
