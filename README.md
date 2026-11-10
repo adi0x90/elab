@@ -173,6 +173,23 @@ Tests cover value encoding, substitutions, mock target execution, write restorat
 
 The workspace contains `elab-core` (profiles, experiments, evidence), `elab-gdb` (GDB/MI), `elab-serial` (UART), `elab-probe` (probe-rs), and `elab-cli` (commands).
 
+## Citation
+
+If you use `elab` in your work, please cite it:
+
+```bibtex
+@software{gupta2026elab,
+  author  = {Gupta, Aditya},
+  title   = {elab: Phased experiments against embedded targets},
+  year    = {2026},
+  version = {0.1.0},
+  url     = {https://github.com/adi0x90/elab},
+  note    = {Attify}
+}
+```
+
+The repository includes a [CITATION.cff](CITATION.cff); GitHub renders a **Cite this repository** button from it.
+
 ## License
 
 [MIT](LICENSE).
