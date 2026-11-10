@@ -207,6 +207,14 @@ impl<'a> Runner<'a> {
                     "kind": kind, "before": hex::encode(&old), "after": hex::encode(&bytes)
                 }))?;
             }
+            Op::WriteReg { name, value } => {
+                let v = subst(value, &self.vars);
+                self.machine.write_register(name, &v)?;
+                self.ev.event(json!({
+                    "event": "write_reg", "phase": phase,
+                    "name": name, "value": v
+                }))?;
+            }
             Op::Published {
                 stop,
                 match_expr,

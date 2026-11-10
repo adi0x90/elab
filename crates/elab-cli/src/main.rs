@@ -16,6 +16,8 @@ const OPS_HELP: &str = r#"EXPERIMENT OPS
   write          { op: write, at: "<addr>", kind: f32|f64|i8|u8|u32|i32,
                    value: "<expr>" }            # scalar, or:
                  { op: write, at: "<addr>", kind: u8|u32, values: ["..", ..] }
+  write_reg      { op: write_reg, name: "<reg>", value: "<expr>" }
+                 # write a CPU register (e.g. a0 at a function entry)
   published      { op: published, stop: <stop>, match: "<expr>", tol, tries,
                    timeout_ms, x, count, channels: [{name, value}, ..] }
   expect         { op: expect, fields: { <channel>: <float>, ... } }
