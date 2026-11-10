@@ -212,7 +212,7 @@ If you use `elab` in your work, please cite it:
   author  = {Gupta, Aditya},
   title   = {elab: Phased experiments against embedded targets},
   year    = {2026},
-  version = {0.1.0},
+  version = {0.1.1},
   url     = {https://github.com/adi0x90/elab},
   note    = {Attify}
 }
