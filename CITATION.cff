@@ -1,0 +1,29 @@
+cff-version: 1.2.0
+message: "If you use elab in your work, please cite it using the metadata below."
+title: elab
+abstract: "elab runs phased YAML experiments against embedded targets over GDB/MI, probe-rs, or serial, and records JSONL evidence."
+type: software
+authors:
+  - family-names: Gupta
+    given-names: Aditya
+    affiliation: Attify
+    website: https://attify.com
+    # orcid: https://orcid.org/0000-0000-0000-0000  # add your ORCID
+repository-code: https://github.com/adi0x90/elab
+url: https://github.com/adi0x90/elab
+license: MIT
+version: "0.1.0"
+date-released: "2026-11-10"
+keywords:
+  - embedded
+  - debugging
+  - GDB
+  - probe-rs
+  - serial
+  - firmware
+  - reverse engineering
+  - ESP32
+identifiers:
+  - type: url
+    value: https://github.com/adi0x90/elab/releases/tag/v0.1.0
+    description: "v0.1.0 release"
