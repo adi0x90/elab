@@ -3,7 +3,10 @@ name = "elab-probe"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
+repository.workspace = true
+readme = "../../README.md"
+description = "probe-rs transport for elab."
 
 [dependencies]
-elab-core = { path = "../elab-core" }
+elab-core = { path = "../elab-core", version = "0.1.0" }
 probe-rs = "0.32"

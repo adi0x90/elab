@@ -8,10 +8,18 @@ Use it to repeat a debugging procedure, compare baseline and modified behavior, 
 
 You need Rust and Cargo to build the tool. Hardware experiments also need a compatible GDB executable, a running debug server such as OpenOCD, and access to the target's debug interface or serial port.
 
+From crates.io:
+
+```sh
+cargo install elab
+```
+
+From a checkout:
+
 ```sh
 git clone https://github.com/adi0x90/elab.git
 cd elab
-cargo build --locked --release -p elab-cli
+cargo build --locked --release -p elab
 cargo install --locked --path crates/elab-cli
 ```
 
@@ -22,7 +30,7 @@ For GDB experiments, the default executable is `gdb-multiarch`. Set `ELAB_GDB` t
 To build with the experimental probe-rs backend:
 
 ```sh
-cargo build --locked --release -p elab-cli --features probe
+cargo build --locked --release -p elab --features probe
 ```
 
 ## Commands
@@ -156,8 +164,8 @@ The probe-rs backend is experimental. It accepts numeric expressions and `$pc`, 
 ## Development
 
 ```sh
-cargo test --locked -p elab-cli -p elab-core -p elab-gdb -p elab-serial
-cargo check --locked -p elab-cli --features probe
+cargo test --locked -p elab -p elab-core -p elab-gdb -p elab-serial
+cargo check --locked -p elab --features probe
 cargo fmt --all --check
 ```
 

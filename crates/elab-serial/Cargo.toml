@@ -3,7 +3,10 @@ name = "elab-serial"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
+repository.workspace = true
+readme = "../../README.md"
+description = "Serial transport and witness matching for elab."
 
 [dependencies]
-elab-core = { path = "../elab-core" }
+elab-core = { path = "../elab-core", version = "0.1.0" }
 serialport = { workspace = true }
