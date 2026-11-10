@@ -130,6 +130,9 @@ impl Gdb {
             .unwrap_or(0);
         let tmp = format!("/tmp/elab-flash-{ts}.bin");
         let mut t = Telnet::connect(&host, port, 5000)?;
+        // Drain the OpenOCD banner prompt; the first cmd() would otherwise
+        // return the banner instead of the command response.
+        let _ = t.read_until("> ", 2_000);
         // Bank 0 = main flash on all supported targets.
         let out = t.cmd(
             &format!("flash read_bank 0 {tmp} 0x{offset:x} 0x{len:x}"),
