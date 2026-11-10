@@ -213,12 +213,13 @@ If you use `elab` in your work, please cite it:
   title   = {elab: Phased experiments against embedded targets},
   year    = {2026},
   version = {0.1.1},
+  doi     = {10.5281/zenodo.24107059},
   url     = {https://github.com/adi0x90/elab},
   note    = {Attify}
 }
 ```
 
-The repository includes a [CITATION.cff](CITATION.cff); GitHub renders a **Cite this repository** button from it.
+The repository includes a [CITATION.cff](CITATION.cff); GitHub renders a **Cite this repository** button from it. The archived release has DOI [10.5281/zenodo.24107059](https://doi.org/10.5281/zenodo.24107059).
 
 ## License
 
