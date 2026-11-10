@@ -28,11 +28,20 @@ pub struct AttachmentRecord {
 
 #[derive(Debug, Default)]
 pub struct RunResult {
+    pub captures: Vec<CapturedValue>,
     pub rows: Vec<PublishedRow>,
     pub failures: Vec<String>,
     pub ok: bool,
     pub channels: Vec<String>,
     pub attachments: Vec<AttachmentRecord>,
+}
+
+/// Each observation, in execution order, even when a name is reused.
+#[derive(Debug, Clone, Serialize)]
+pub struct CapturedValue {
+    pub phase: String,
+    pub name: String,
+    pub value: String,
 }
 
 struct Runner<'a> {
@@ -42,6 +51,7 @@ struct Runner<'a> {
     ev: &'a mut Evidence,
     vars: HashMap<String, Value>,
     last: Option<PublishedRow>,
+    captures: Vec<CapturedValue>,
     rows: Vec<PublishedRow>,
     failures: Vec<String>,
     saves: Vec<(u64, Vec<u8>)>,
@@ -74,6 +84,7 @@ pub fn run<'a>(
         ev,
         vars: HashMap::new(),
         last: None,
+        captures: Vec::new(),
         rows: Vec::new(),
         failures: Vec::new(),
         saves: Vec::new(),
@@ -98,6 +109,7 @@ pub fn run<'a>(
         }
     }
     Ok(RunResult {
+        captures: r.captures,
         rows: r.rows,
         failures: r.failures,
         ok,
@@ -161,6 +173,11 @@ impl<'a> Runner<'a> {
                     "event": "capture", "phase": phase, "name": name,
                     "expr": expr, "value": v.literal()
                 }))?;
+                self.captures.push(CapturedValue {
+                    phase: phase.to_string(),
+                    name: name.clone(),
+                    value: v.literal(),
+                });
                 self.vars.insert(name.clone(), v);
             }
             Op::Write {

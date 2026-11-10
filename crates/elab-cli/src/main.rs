@@ -248,6 +248,7 @@ fn run_cmd(spec_path: PathBuf, runs: PathBuf) -> Result<()> {
         "device_profile": device_path.display().to_string(),
         "device_sha256": sha256_hex(&std::fs::read(&device_path)?),
         "elab_version": env!("CARGO_PKG_VERSION"),
+        "captures": result.captures,
         "rows": result.rows,
         "failures": result.failures,
         "attachments": result.attachments,
@@ -272,11 +273,22 @@ fn run_cmd(spec_path: PathBuf, runs: PathBuf) -> Result<()> {
 }
 
 fn print_table(r: &elab_core::RunResult) {
-    print!("{:<10} {:>13}", "phase", "sample");
-    for c in &r.channels {
-        print!(" {:>12}", c);
+    if !r.captures.is_empty() {
+        println!("{:<10} {:<24} value", "phase", "capture");
+        for c in &r.captures {
+            println!("{:<10} {:<24} {}", c.phase, c.name, c.value);
+        }
     }
-    println!(" {:>8}", "count");
+    if !r.rows.is_empty() {
+        if !r.captures.is_empty() {
+            println!();
+        }
+        print!("{:<10} {:>13}", "phase", "sample");
+        for c in &r.channels {
+            print!(" {:>12}", c);
+        }
+        println!(" {:>8}", "count");
+    }
     for row in &r.rows {
         print!("{:<10} {:>13.9}", row.phase, row.x);
         for c in &r.channels {
