@@ -1,0 +1,33 @@
+{
+  "title": "elab: phased experiments against embedded targets",
+  "description": "Runs phased YAML experiments against embedded targets over GDB/MI, probe-rs, or serial, and records JSONL evidence.",
+  "upload_type": "software",
+  "access_right": "open",
+  "license": "MIT",
+  "version": "0.1.1",
+  "publication_date": "2026-11-10",
+  "creators": [
+    {
+      "name": "Gupta, Aditya",
+      "affiliation": "Attify",
+      "orcid": "0009-0000-9899-483X"
+    }
+  ],
+  "keywords": [
+    "embedded",
+    "debugging",
+    "GDB",
+    "probe-rs",
+    "serial",
+    "firmware",
+    "ESP32",
+    "reverse engineering"
+  ],
+  "related_identifiers": [
+    {
+      "identifier": "https://github.com/adi0x90/elab",
+      "relation": "isSupplementTo",
+      "scheme": "url"
+    }
+  ]
+}
