@@ -95,6 +95,8 @@ phases:
 
 Operations run in order. `${name}` substitutes a captured value into an expression; GDB registers such as `$sp` remain unchanged. Stop names come from the device profile. Memory operations can use numeric addresses or GDB expressions.
 
+On completion, `elab run` prints each capture's phase, name, and value directly in the terminal. Reusing a capture name keeps every observation in the output, so before/after readings remain visible. The same readings are retained in `events.jsonl` and the manifest. Experiments using `published` also print their sample/channel table.
+
 | Operation | Purpose |
 |---|---|
 | `watch` | Wait for one hardware write-watchpoint value change, record the stop, and remove the watch. |
@@ -102,6 +104,7 @@ Operations run in order. `${name}` substitutes a captured value into an expressi
 | `stop` | Run to a named hardware breakpoint and check the program counter. |
 | `capture` | Evaluate an expression and save its value. |
 | `write` | Save the old bytes, write a typed value, and check the readback. |
+| `write_reg` | Write a CPU register from a GDB expression (for example a function argument at its entry breakpoint). |
 | `published` | Find a matching sample at a named stop and capture its channels. |
 | `expect` | Compare fields from the latest published row with expected numbers. |
 | `serial_expect` | Wait for a literal substring in serial output. |

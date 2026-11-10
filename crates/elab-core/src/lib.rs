@@ -68,6 +68,13 @@ pub trait Machine {
     fn evaluate(&mut self, expr: &str) -> Result<Value>;
     fn read_memory(&mut self, addr: u64, len: usize) -> Result<Vec<u8>>;
     fn write_memory(&mut self, addr: u64, bytes: &[u8]) -> Result<()>;
+    /// Write a CPU register from a GDB expression. Backends without a
+    /// register file return an error.
+    fn write_register(&mut self, _name: &str, _value: &str) -> Result<()> {
+        Err(ElabError::msg(
+            "write_reg is not supported by this transport",
+        ))
+    }
     fn reset(&mut self, halt: bool) -> Result<()>;
     fn detach(&mut self) -> Result<()>;
     /// Bound blocking waits (stop/resume) so a hung target cannot hang the

@@ -6,6 +6,7 @@ use std::collections::HashMap;
 struct Mock {
     read: Vec<u8>,
     reset_halt: Option<bool>,
+    regs: Vec<(String, String)>,
 }
 
 impl Machine for Mock {
@@ -24,6 +25,10 @@ impl Machine for Mock {
         Ok(self.read.iter().copied().cycle().take(len).collect())
     }
     fn write_memory(&mut self, _addr: u64, _bytes: &[u8]) -> Result<()> {
+        Ok(())
+    }
+    fn write_register(&mut self, name: &str, value: &str) -> Result<()> {
+        self.regs.push((name.to_string(), value.to_string()));
         Ok(())
     }
     fn reset(&mut self, halt: bool) -> Result<()> {
@@ -63,6 +68,10 @@ entry = { addr = 0x1000 }
                     at: "0x2000".into(),
                     len: 4,
                 },
+                Op::WriteReg {
+                    name: "a0".into(),
+                    value: "0x3f666666".into(),
+                },
             ],
         }],
     };
@@ -70,6 +79,7 @@ entry = { addr = 0x1000 }
     let mut mock = Mock {
         read: vec![0xAA, 0xBB],
         reset_halt: None,
+        regs: Vec::new(),
     };
     let dir = std::env::temp_dir().join(format!("elab-ops-{}", std::process::id()));
     let mut ev = Evidence::create(&dir, "ops").unwrap();
@@ -79,6 +89,10 @@ entry = { addr = 0x1000 }
 
     let dump = ev.dir().join("attachments/dump.bin");
     assert_eq!(std::fs::read(&dump).unwrap(), vec![0xAA, 0xBB, 0xAA, 0xBB]);
+    assert_eq!(
+        mock.regs,
+        vec![("a0".to_string(), "0x3f666666".to_string())]
+    );
 
     let _ = ev.finish(true, serde_json::json!({}));
     let _ = std::fs::remove_dir_all(dir);
@@ -137,6 +151,7 @@ sample = { addr = 0x3000 }
     let mut mock = Mock {
         read: vec![],
         reset_halt: None,
+        regs: Vec::new(),
     };
     let dir = std::env::temp_dir().join(format!("elab-inline-{}", std::process::id()));
     let mut ev = Evidence::create(&dir, "inline").unwrap();

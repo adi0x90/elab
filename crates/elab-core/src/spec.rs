@@ -125,6 +125,13 @@ pub enum Op {
         #[serde(default)]
         values: Option<Vec<String>>,
     },
+    /// Write a CPU register from a GDB expression. `name` may include the
+    /// leading `$`; `${var}` is substituted in `value`. Use this for a
+    /// function argument that a memory write cannot reach.
+    WriteReg {
+        name: String,
+        value: String,
+    },
     Published {
         stop: String,
         #[serde(rename = "match")]

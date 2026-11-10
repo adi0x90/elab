@@ -111,3 +111,48 @@ pub = { addr = 0x1000 }
     let _ = ev.finish(true, serde_json::json!({}));
     let _ = std::fs::remove_dir_all(dir);
 }
+
+#[test]
+fn repeated_capture_names_keep_before_and_after_observations() {
+    let device: Device = toml::from_str("name = 'mock'\n[image]\n[stops]\n").unwrap();
+    let spec = ExperimentSpec {
+        name: "capture-history".into(),
+        device: "mock.toml".into(),
+        transport: Transport::default(),
+        phases: vec![
+            Phase {
+                name: "before".into(),
+                ops: vec![Op::Capture {
+                    name: "input".into(),
+                    expr: "2.5".into(),
+                }],
+            },
+            Phase {
+                name: "after".into(),
+                ops: vec![Op::Capture {
+                    name: "input".into(),
+                    expr: "1.0".into(),
+                }],
+            },
+        ],
+    };
+    let mut mock = Mock {
+        vals: HashMap::new(),
+    };
+    let dir = std::env::temp_dir().join(format!("elab-capture-history-{}", std::process::id()));
+    let mut ev = Evidence::create(&dir, "history").unwrap();
+    let result = run(&spec, &device, &mut mock, None, &mut ev).unwrap();
+    let observed: Vec<_> = result
+        .captures
+        .iter()
+        .map(|c| (c.phase.as_str(), c.name.as_str(), c.value.as_str()))
+        .collect();
+    assert_eq!(
+        observed,
+        vec![("before", "input", "2.5"), ("after", "input", "1.0")]
+    );
+    assert!(result.rows.is_empty());
+    assert!(result.ok);
+    let _ = ev.finish(true, serde_json::json!({}));
+    let _ = std::fs::remove_dir_all(dir);
+}

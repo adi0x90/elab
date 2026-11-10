@@ -276,6 +276,13 @@ impl Gdb {
         Ok(())
     }
 
+    pub fn write_register(&mut self, name: &str, value: &str) -> Result<()> {
+        let reg = name.trim_start_matches('$');
+        let cmd = format!("set ${reg} = {value}");
+        self.cmd(&format!("-interpreter-exec console \"{}\"", escape(&cmd)))?;
+        Ok(())
+    }
+
     pub fn reset(&mut self, halt: bool) -> Result<()> {
         let cmd = if halt {
             "monitor reset halt"
@@ -369,6 +376,9 @@ impl Machine for Gdb {
     }
     fn write_memory(&mut self, addr: u64, bytes: &[u8]) -> Result<()> {
         Gdb::write_memory(self, addr, bytes)
+    }
+    fn write_register(&mut self, name: &str, value: &str) -> Result<()> {
+        Gdb::write_register(self, name, value)
     }
     fn reset(&mut self, halt: bool) -> Result<()> {
         Gdb::reset(self, halt)
