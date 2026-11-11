@@ -90,12 +90,35 @@ pub struct SerialSpec {
 #[derive(Debug, Clone, Deserialize)]
 pub struct Phase {
     pub name: String,
+    /// Execute this phase a fixed number of times, in one transport session.
+    #[serde(default = "default_repeat", deserialize_with = "repeat_count")]
+    pub repeat: usize,
     pub ops: Vec<Op>,
+}
+
+fn default_repeat() -> usize {
+    1
+}
+
+fn repeat_count<'de, D: serde::Deserializer<'de>>(d: D) -> std::result::Result<usize, D::Error> {
+    let count = usize::deserialize(d)?;
+    if count == 0 {
+        return Err(serde::de::Error::custom("phase repeat must be at least 1"));
+    }
+    Ok(count)
 }
 
 #[derive(Debug, Clone, Deserialize)]
 #[serde(tag = "op", rename_all = "snake_case")]
 pub enum Op {
+    /// Halt without resetting or waiting for a breakpoint.
+    Halt,
+    /// Resume execution and return once the transport acknowledges running.
+    Resume,
+    /// Wait on the host; leave the target in its current running/halted state.
+    Sleep {
+        ms: u64,
+    },
     /// Stop on one hardware write-watchpoint value change, then remove the watch.
     Watch {
         expr: String,

@@ -60,6 +60,8 @@ struct Runner<'a> {
     inline_channels: Vec<String>,
     /// Transport-level wait bound; ops with an explicit timeout_ms override it.
     default_timeout_ms: u64,
+    /// An explicit halt is released on execution errors, after write restoration.
+    halted_by_op: bool,
 }
 
 pub fn run<'a>(
@@ -91,11 +93,20 @@ pub fn run<'a>(
         attachments: Vec::new(),
         inline_channels: Vec::new(),
         default_timeout_ms,
+        halted_by_op: false,
     };
     let res = r.exec(spec);
     if res.is_err() {
         for (addr, old) in r.saves.iter().rev() {
             let _ = r.machine.write_memory(*addr, old);
+        }
+        if r.halted_by_op {
+            if let Err(cleanup) = r.machine.resume() {
+                return Err(ElabError::msg(format!(
+                    "{}; resume after error failed: {cleanup}",
+                    res.unwrap_err()
+                )));
+            }
         }
     }
     res?;
@@ -121,10 +132,19 @@ pub fn run<'a>(
 impl<'a> Runner<'a> {
     fn exec(&mut self, spec: &ExperimentSpec) -> Result<()> {
         for phase in &spec.phases {
-            self.ev
-                .event(json!({"event": "phase", "name": phase.name}))?;
-            for op in &phase.ops {
-                self.op(&phase.name, op)?;
+            if phase.repeat == 0 {
+                return Err(ElabError::msg("phase repeat must be at least 1"));
+            }
+            for iteration in 1..=phase.repeat {
+                let name = if phase.repeat == 1 {
+                    phase.name.clone()
+                } else {
+                    format!("{}[{iteration}]", phase.name)
+                };
+                self.ev.event(json!({"event": "phase", "name": name}))?;
+                for op in &phase.ops {
+                    self.op(&name, op)?;
+                }
             }
         }
         Ok(())
@@ -132,6 +152,21 @@ impl<'a> Runner<'a> {
 
     fn op(&mut self, phase: &str, op: &Op) -> Result<()> {
         match op {
+            Op::Halt => {
+                self.machine.halt()?;
+                self.halted_by_op = true;
+                self.ev.event(json!({"event": "halt", "phase": phase}))?;
+            }
+            Op::Resume => {
+                self.machine.resume()?;
+                self.halted_by_op = false;
+                self.ev.event(json!({"event": "resume", "phase": phase}))?;
+            }
+            Op::Sleep { ms } => {
+                std::thread::sleep(Duration::from_millis(*ms));
+                self.ev
+                    .event(json!({"event": "sleep", "phase": phase, "ms": ms}))?;
+            }
             Op::Watch { expr } => {
                 let expr = subst(expr, &self.vars);
                 let hit = self.machine.watch(&expr)?;
@@ -449,8 +484,28 @@ impl<'a> Runner<'a> {
     ) -> Result<AttachmentRecord> {
         let dir = self.ev.dir().join("attachments");
         std::fs::create_dir_all(&dir)?;
-        let path = dir.join(format!("{name}.bin"));
-        std::fs::write(&path, bytes)?;
+        // A repeated attachment name must not overwrite earlier observations.
+        // Keep the original filename on first use for existing specifications.
+        use std::io::Write;
+        let mut suffix = 1;
+        let (path, name, mut file) = loop {
+            let candidate = if suffix == 1 {
+                name.to_string()
+            } else {
+                format!("{name}-{suffix}")
+            };
+            let path = dir.join(format!("{candidate}.bin"));
+            match std::fs::OpenOptions::new()
+                .write(true)
+                .create_new(true)
+                .open(&path)
+            {
+                Ok(file) => break (path, candidate, file),
+                Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => suffix += 1,
+                Err(e) => return Err(e.into()),
+            }
+        };
+        file.write_all(bytes)?;
         let sha = sha256_hex(bytes);
         // Small attachments render as hex in the phase table; larger
         // ones are file-only evidence.

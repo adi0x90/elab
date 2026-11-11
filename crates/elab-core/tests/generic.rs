@@ -61,6 +61,7 @@ pub = { addr = 0x1000 }
         device: "mock.toml".into(),
         transport: Transport::default(),
         phases: vec![Phase {
+            repeat: 1,
             name: "run".into(),
             ops: vec![
                 Op::Capture {
@@ -121,6 +122,7 @@ fn repeated_capture_names_keep_before_and_after_observations() {
         transport: Transport::default(),
         phases: vec![
             Phase {
+                repeat: 1,
                 name: "before".into(),
                 ops: vec![Op::Capture {
                     name: "input".into(),
@@ -128,6 +130,7 @@ fn repeated_capture_names_keep_before_and_after_observations() {
                 }],
             },
             Phase {
+                repeat: 1,
                 name: "after".into(),
                 ops: vec![Op::Capture {
                     name: "input".into(),

@@ -19,6 +19,7 @@ pub struct Gdb {
     /// with the configured timeout so a hung target cannot hang the run.
     lines: Receiver<String>,
     timeout_ms: u64,
+    running: bool,
     /// Optional OpenOCD telnet endpoint (host, port) for flash-driver
     /// commands; set by the CLI when the spec configures openocd.
     openocd_telnet: Option<(String, u16)>,
@@ -87,12 +88,15 @@ impl Gdb {
             stdin,
             lines: start_reader(stdout),
             timeout_ms: 10_000,
+            running: false,
             openocd_telnet: None,
             openocd_scp_target: None,
         };
         gdb.cmd("-gdb-set pagination off")?;
         gdb.cmd("-gdb-set confirm off")?;
         gdb.cmd("-gdb-set remotetimeout 10")?;
+        // Allow an interrupt while an explicit resume is still running.
+        gdb.cmd("-gdb-set mi-async on")?;
         Ok(gdb)
     }
 
@@ -191,7 +195,7 @@ impl Gdb {
         }
         c.push_str(&format!(" *0x{addr:x}"));
         self.cmd(&c)?;
-        self.resume()?;
+        self.continue_to_stop()?;
         let pc = self.evaluate("$pc")?.as_u64()?;
         if pc != addr {
             return Err(ElabError::Machine(format!(
@@ -201,7 +205,7 @@ impl Gdb {
         Ok(pc)
     }
 
-    fn resume(&mut self) -> Result<Record> {
+    fn continue_to_stop(&mut self) -> Result<Record> {
         self.send("-exec-continue")?;
         loop {
             let line = self.line()?;
@@ -235,7 +239,7 @@ impl Gdb {
                     info.raw
                 )));
             }
-            let stopped = self.resume()?;
+            let stopped = self.continue_to_stop()?;
             watch_hit(&stopped, &number)
         })();
         // Delete only our own watch, including when continue fails or stops elsewhere.
@@ -251,6 +255,32 @@ impl Gdb {
 
     pub fn backtrace(&mut self) -> Result<String> {
         Ok(self.cmd("-stack-list-frames")?.raw)
+    }
+
+    /// Halt the running inferior and consume its stop before another operation.
+    pub fn halt(&mut self) -> Result<()> {
+        if self.running {
+            self.cmd("-exec-interrupt --all")?;
+            while self.running {
+                self.line()?;
+            }
+        } else {
+            self.cmd("-interpreter-exec console \"monitor halt\"")?;
+        }
+        self.cmd("-interpreter-exec console \"maintenance flush register-cache\"")?;
+        Ok(())
+    }
+
+    /// Return at the running acknowledgement, not at the next breakpoint.
+    pub fn resume_execution(&mut self) -> Result<()> {
+        let record = self.cmd("-exec-continue")?;
+        if !record.raw.starts_with("^running") {
+            return Err(ElabError::Machine(format!(
+                "continue did not acknowledge running: {}",
+                record.raw
+            )));
+        }
+        Ok(())
     }
 
     pub fn evaluate(&mut self, expr: &str) -> Result<Value> {
@@ -350,7 +380,14 @@ impl Gdb {
         use std::sync::mpsc::RecvTimeoutError;
         let timeout = Duration::from_millis(self.timeout_ms);
         match self.lines.recv_timeout(timeout) {
-            Ok(s) => Ok(s),
+            Ok(s) => {
+                if s.starts_with("^running") || s.starts_with("*running") {
+                    self.running = true;
+                } else if s.starts_with("*stopped") {
+                    self.running = false;
+                }
+                Ok(s)
+            }
             Err(RecvTimeoutError::Timeout) => Err(ElabError::Machine(format!(
                 "gdb produced no output within {timeout:?} (hung target or wedged server?)"
             ))),
@@ -362,6 +399,12 @@ impl Gdb {
 }
 
 impl Machine for Gdb {
+    fn halt(&mut self) -> Result<()> {
+        Gdb::halt(self)
+    }
+    fn resume(&mut self) -> Result<()> {
+        self.resume_execution()
+    }
     fn watch(&mut self, expr: &str) -> Result<WatchHit> {
         Gdb::watch(self, expr)
     }

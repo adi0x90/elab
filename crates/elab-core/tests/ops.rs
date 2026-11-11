@@ -59,6 +59,7 @@ entry = { addr = 0x1000 }
         device: "mock.toml".into(),
         transport: Transport::default(),
         phases: vec![Phase {
+            repeat: 1,
             name: "ops".into(),
             ops: vec![
                 Op::Reset { halt: true },
@@ -117,6 +118,7 @@ sample = { addr = 0x3000 }
         device: "mock.toml".into(),
         transport: Transport::default(),
         phases: vec![Phase {
+            repeat: 1,
             name: "p".into(),
             ops: vec![
                 Op::Published {
@@ -211,6 +213,7 @@ measure = { addr = "&sensor_task" }
         device: "mock.toml".into(),
         transport: Transport::default(),
         phases: vec![Phase {
+            repeat: 1,
             name: "p".into(),
             ops: vec![Op::Stop {
                 at: "measure".into(),

@@ -41,6 +41,20 @@ impl ProbeMachine {
 }
 
 impl Machine for ProbeMachine {
+    fn halt(&mut self) -> Result<()> {
+        let timeout = self.timeout;
+        self.core()?
+            .halt(timeout)
+            .map_err(|e| ElabError::Machine(format!("probe halt: {e}")))?;
+        Ok(())
+    }
+
+    fn resume(&mut self) -> Result<()> {
+        self.core()?
+            .run()
+            .map_err(|e| ElabError::Machine(format!("probe run: {e}")))
+    }
+
     fn stop(&mut self, addr: u64, cond: Option<&str>) -> Result<u64> {
         if cond.is_some() {
             return Err(ElabError::msg(

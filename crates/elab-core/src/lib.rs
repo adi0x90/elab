@@ -56,6 +56,12 @@ pub struct WatchHit {
 
 /// A debug target: stops, typed reads/writes, memory access, reset.
 pub trait Machine {
+    fn halt(&mut self) -> Result<()> {
+        Err(ElabError::msg("halt unsupported by this transport"))
+    }
+    fn resume(&mut self) -> Result<()> {
+        Err(ElabError::msg("resume unsupported by this transport"))
+    }
     fn watch(&mut self, _expr: &str) -> Result<WatchHit> {
         Err(ElabError::msg(
             "hardware watchpoints unsupported by this transport",
