@@ -107,6 +107,9 @@ On completion, `elab run` prints each capture's phase, name, and value directly 
 
 | Operation | Purpose |
 |---|---|
+| `halt` | Halt immediately without resetting or inserting a breakpoint. |
+| `resume` | Continue and return when the debug transport acknowledges running. |
+| `sleep` | Wait `ms` milliseconds on the host without changing target state. |
 | `watch` | Wait for one hardware write-watchpoint value change, record the stop, and remove the watch. |
 | `backtrace` | Record the current stack as the original GDB/MI response. |
 | `stop` | Run to a named hardware breakpoint and check the program counter. |
@@ -122,6 +125,36 @@ On completion, `elab run` prints each capture's phase, name, and value directly 
 | `power_cycle` | Execute the device profile's `[power] cycle` argument list. |
 | `attachment` | Save a memory range as a binary file with a recorded SHA-256. |
 | `flash_read` | Read raw flash through the debug server's flash driver (works even with cache off). |
+
+### Timed memory snapshots
+
+Use a phase's positive `repeat` count to sample in one debug session. Omit it
+for the existing one-pass behavior. This example assumes a profile and ELF for
+your target; replace the address with the memory range you want to inspect:
+
+```yaml
+phases:
+  - name: sample
+    repeat: 8
+    ops:
+      - { op: halt }
+      - { op: attachment, name: words, at: "0x20000000", len: 24 }
+      - { op: resume }
+      - { op: sleep, ms: 500 }
+```
+
+`halt` waits until the core has stopped. `resume` returns while it runs, so the
+following `sleep` gives the firmware 500 ms of running time. Debugger overhead
+adds to the interval between snapshots; this is not precise periodic sampling.
+The last iteration also resumes and sleeps. `sleep` alone does not resume a
+halted target. GDB and probe-rs support halt/resume; serial-only runs reject them.
+
+Captures and events use `sample[1]` through `sample[8]`. Repeated attachment
+names retain every file (`words.bin`, `words-2.bin`, ...), with the chosen name
+in the manifest and path in the event record. On an execution error after an
+explicit `halt`, the runner attempts to resume after restoring saved writes;
+a failed resume is reported with the original error. Successful runs follow
+the final operation, so include `resume` to leave the target running.
 
 ### OpenOCD lifecycle management
 

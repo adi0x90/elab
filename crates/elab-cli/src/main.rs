@@ -9,6 +9,10 @@ use toml;
 
 const OPS_HELP: &str = r#"EXPERIMENT OPS
 
+  halt           { op: halt }                     # halt now, without resetting
+  resume         { op: resume }                   # continue, do not wait for a stop
+  sleep          { op: sleep, ms: 500 }           # host delay; target state unchanged
+
   watch          { op: watch, expr: "nn_act[4]" }     # one hardware value change; removes watch
   backtrace      { op: backtrace }                   # raw GDB/MI stack frames
   stop           { op: stop, at: <stop>, when: "<cond>", timeout_ms }
@@ -30,6 +34,9 @@ const OPS_HELP: &str = r#"EXPERIMENT OPS
   flash_read     { op: flash_read, name: <name>, offset: "<addr>", len: <bytes> }
                  # raw flash via OpenOCD's flash driver (works even when the
                  # CPU is halted with the cache off)
+
+A phase accepts repeat: <positive count> (default 1). Repeated phases are
+labelled name[1], name[2], ...; repeated attachments get unique filenames.
 
 Addresses in stop profiles, [image] verify/model and the ops above accept a
 number (0x420094a2) or an ELF symbol expression (&symbol, resolved by GDB).
