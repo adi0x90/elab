@@ -1,7 +1,7 @@
 use crate::{ElabError, Result};
 use std::fmt;
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
 pub enum Value {
     Float(f64),
     Int(i64),
@@ -61,6 +61,15 @@ impl Value {
                 return Value::UInt(u);
             }
         }
+        // GDB decorates char-sized integers with a character literal, e.g.
+        // 0 '\000'. Keep the numeric value usable in later writes.
+        if let Some((number, annotation)) = t.split_once(' ') {
+            if annotation.starts_with('\'') && annotation.ends_with('\'') {
+                if let Ok(i) = number.parse::<i64>() {
+                    return Value::Int(i);
+                }
+            }
+        }
         if let Ok(i) = t.parse::<i64>() {
             return Value::Int(i);
         }
@@ -87,6 +96,14 @@ mod tests {
             Value::UInt(u) => assert_eq!(u, 0x42009170),
             other => panic!("unexpected {other:?}"),
         }
+    }
+
+    #[test]
+    fn character_annotations_remain_numeric_for_reuse() {
+        assert_eq!(Value::from_gdb("0 '\\000'"), Value::Int(0));
+        assert_eq!(Value::from_gdb("127 '\\177'"), Value::Int(127));
+        assert_eq!(Value::from_gdb("-1 '\\377'"), Value::Int(-1));
+        assert_eq!(Value::from_gdb("32 ' '"), Value::Int(32));
     }
 
     #[test]

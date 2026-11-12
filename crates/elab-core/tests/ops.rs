@@ -58,6 +58,9 @@ entry = { addr = 0x1000 }
         name: "ops".into(),
         device: "mock.toml".into(),
         transport: Transport::default(),
+        parameters: Default::default(),
+        measurements: Default::default(),
+        resolved_parameters: Default::default(),
         phases: vec![Phase {
             repeat: 1,
             name: "ops".into(),
@@ -117,6 +120,9 @@ sample = { addr = 0x3000 }
         name: "inline".into(),
         device: "mock.toml".into(),
         transport: Transport::default(),
+        parameters: Default::default(),
+        measurements: Default::default(),
+        resolved_parameters: Default::default(),
         phases: vec![Phase {
             repeat: 1,
             name: "p".into(),
@@ -171,7 +177,6 @@ sample = { addr = 0x3000 }
 /// A profile with symbol-expression stops resolves them through the machine.
 #[test]
 fn symbol_stop_addresses_resolve_via_machine() {
-    use std::collections::HashMap;
     struct SymbolMock {
         expect_expr: String,
     }
@@ -212,6 +217,9 @@ measure = { addr = "&sensor_task" }
         name: "symbol".into(),
         device: "mock.toml".into(),
         transport: Transport::default(),
+        parameters: Default::default(),
+        measurements: Default::default(),
+        resolved_parameters: Default::default(),
         phases: vec![Phase {
             repeat: 1,
             name: "p".into(),

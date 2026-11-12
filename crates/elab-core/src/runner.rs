@@ -1,4 +1,5 @@
 use crate::device::{Device, Endian};
+use crate::observation::{compare, Observation, Observations};
 use crate::spec::{ExperimentSpec, Op};
 use crate::{sha256_hex, ElabError, Evidence, Machine, Result, SerialLink, Value};
 use serde::Serialize;
@@ -55,6 +56,8 @@ struct Runner<'a> {
     rows: Vec<PublishedRow>,
     failures: Vec<String>,
     saves: Vec<(u64, Vec<u8>)>,
+    named_writes: HashMap<String, usize>,
+    observations: Observations,
     attachments: Vec<AttachmentRecord>,
     /// Channel names defined inline by published ops (not in the profile).
     inline_channels: Vec<String>,
@@ -71,6 +74,7 @@ pub fn run<'a>(
     serial: Option<&'a mut dyn SerialLink>,
     ev: &'a mut Evidence,
 ) -> Result<RunResult> {
+    let spec = spec.prepare(&[])?;
     let channels = device.channel_names();
     let default_timeout_ms = spec
         .transport
@@ -90,26 +94,40 @@ pub fn run<'a>(
         rows: Vec::new(),
         failures: Vec::new(),
         saves: Vec::new(),
+        named_writes: HashMap::new(),
+        observations: Observations::default(),
         attachments: Vec::new(),
         inline_channels: Vec::new(),
         default_timeout_ms,
         halted_by_op: false,
     };
-    let res = r.exec(spec);
-    if res.is_err() {
+    let res = r.exec(&spec);
+    if let Err(error) = res {
+        let mut cleanup_errors = Vec::new();
         for (addr, old) in r.saves.iter().rev() {
-            let _ = r.machine.write_memory(*addr, old);
-        }
-        if r.halted_by_op {
-            if let Err(cleanup) = r.machine.resume() {
-                return Err(ElabError::msg(format!(
-                    "{}; resume after error failed: {cleanup}",
-                    res.unwrap_err()
-                )));
+            let restored = r.machine.write_memory(*addr, old).and_then(|_| {
+                if r.machine.read_memory(*addr, old.len())? != *old {
+                    return Err(ElabError::msg("rollback readback mismatch"));
+                }
+                Ok(())
+            });
+            if let Err(e) = restored {
+                cleanup_errors.push(format!("restore {addr:#x}: {e}"));
             }
         }
+        if r.halted_by_op {
+            if let Err(e) = r.machine.resume() {
+                cleanup_errors.push(format!("resume after error failed: {e}"));
+            }
+        }
+        if cleanup_errors.is_empty() {
+            return Err(error);
+        }
+        return Err(ElabError::msg(format!(
+            "{error}; cleanup: {}",
+            cleanup_errors.join("; ")
+        )));
     }
-    res?;
     let ok = r.failures.is_empty();
     // Inline published channels extend the profile's channel list; each op's
     // channels were seen in order during exec.
@@ -152,6 +170,59 @@ impl<'a> Runner<'a> {
 
     fn op(&mut self, phase: &str, op: &Op) -> Result<()> {
         match op {
+            Op::Measure { .. } => return Err(ElabError::msg("measurement was not expanded")),
+            Op::Restore { write } => {
+                let index = *self
+                    .named_writes
+                    .get(write)
+                    .ok_or_else(|| ElabError::msg(format!("no active write '{write}'")))?;
+                // Restoring an older overlapping write would invalidate later saves.
+                let (addr, old) = self.saves[index].clone();
+                if self.saves[index + 1..].iter().any(|(a, b)| {
+                    (*a as u128) < addr as u128 + old.len() as u128
+                        && (addr as u128) < *a as u128 + b.len() as u128
+                }) {
+                    return Err(ElabError::msg(format!(
+                        "restore '{write}' overlaps a later write; restore in reverse order"
+                    )));
+                }
+                self.machine.write_memory(addr, &old)?;
+                if self.machine.read_memory(addr, old.len())? != old {
+                    return Err(ElabError::msg(format!(
+                        "restore '{write}' readback mismatch"
+                    )));
+                }
+                self.ev.event(json!({"event":"restore", "phase":phase, "write":write, "addr":format!("{addr:#x}"), "bytes":hex::encode(&old)}))?;
+                self.saves.remove(index);
+                self.named_writes.remove(write);
+                for i in self.named_writes.values_mut() {
+                    if *i > index {
+                        *i -= 1;
+                    }
+                }
+            }
+            Op::Compare {
+                left,
+                right,
+                relation,
+                tolerance,
+            } => {
+                // Missing/ambiguous data fails the comparison but does not skip recovery.
+                let result = self.observations.get(left).and_then(|a| {
+                    self.observations
+                        .get(right)
+                        .and_then(|b| compare(a, b, *relation, *tolerance))
+                });
+                let ok = matches!(result, Ok(true));
+                let error = result.err().map(|e| e.to_string());
+                self.ev.event(json!({"event":"compare", "phase":phase, "left":left, "right":right, "relation":relation, "tolerance":tolerance, "ok":ok, "error":error}))?;
+                if !ok {
+                    self.failures.push(format!(
+                        "{phase}: comparison {left} {relation:?} {right} failed{}",
+                        error.map(|e| format!(": {e}")).unwrap_or_default()
+                    ));
+                }
+            }
             Op::Halt => {
                 self.machine.halt()?;
                 self.halted_by_op = true;
@@ -186,7 +257,10 @@ impl<'a> Runner<'a> {
                 timeout_ms,
             } => {
                 let st = self.device.stop(at)?.clone();
-                let cond = when.clone().or(st.cond.clone());
+                let cond = when
+                    .clone()
+                    .or(st.cond.clone())
+                    .map(|s| subst(&s, &self.vars));
                 let addr = st.addr.resolve(self.machine)?;
                 if let Some(ms) = timeout_ms {
                     self.machine.set_timeout_ms(*ms);
@@ -213,14 +287,23 @@ impl<'a> Runner<'a> {
                     name: name.clone(),
                     value: v.literal(),
                 });
+                self.observe(phase, name, Observation::Scalar(v.clone()))?;
                 self.vars.insert(name.clone(), v);
             }
             Op::Write {
+                id,
                 at,
                 kind,
                 value,
                 values,
             } => {
+                if let Some(id) = id {
+                    if self.named_writes.contains_key(id) {
+                        return Err(ElabError::msg(format!(
+                            "write '{id}' is already active; restore it before reusing the ID"
+                        )));
+                    }
+                }
                 let addr = self.address(at)?;
                 let bytes = match (value, values) {
                     (Some(_), Some(_)) => {
@@ -248,6 +331,9 @@ impl<'a> Runner<'a> {
                     (None, None) => return Err(ElabError::msg("write needs value or values")),
                 };
                 let old = self.machine.read_memory(addr, bytes.len())?;
+                if let Some(id) = id {
+                    self.named_writes.insert(id.clone(), self.saves.len());
+                }
                 self.saves.push((addr, old.clone()));
                 self.machine.write_memory(addr, &bytes)?;
                 let now = self.machine.read_memory(addr, bytes.len())?;
@@ -256,8 +342,20 @@ impl<'a> Runner<'a> {
                 }
                 self.ev.event(json!({
                     "event": "write", "phase": phase, "addr": format!("0x{addr:x}"),
-                    "kind": kind, "before": hex::encode(&old), "after": hex::encode(&bytes)
+                    "id": id, "kind": kind, "before": hex::encode(&old), "after": hex::encode(&bytes)
                 }))?;
+                if let Some(id) = id {
+                    self.observe(
+                        phase,
+                        &format!("{id}.before"),
+                        Observation::Bytes(hex::encode(&old)),
+                    )?;
+                    self.observe(
+                        phase,
+                        &format!("{id}.after"),
+                        Observation::Bytes(hex::encode(&bytes)),
+                    )?;
+                }
             }
             Op::WriteReg { name, value } => {
                 let v = subst(value, &self.vars);
@@ -360,6 +458,11 @@ impl<'a> Runner<'a> {
                 for (k, v) in &row.values {
                     self.vars.insert(k.clone(), Value::Float(*v));
                 }
+                self.observe(phase, "x", Observation::Scalar(Value::Float(row.x)))?;
+                self.observe(phase, "count", Observation::Scalar(Value::UInt(row.count)))?;
+                for (name, value) in &row.values {
+                    self.observe(phase, name, Observation::Scalar(Value::Float(*value)))?;
+                }
                 self.last = Some(row.clone());
                 self.rows.push(row);
             }
@@ -460,16 +563,23 @@ impl<'a> Runner<'a> {
                 let addr = self.address(at)?;
                 let bytes = self.machine.read_memory(addr, *len)?;
                 let rec = self.record_attachment(phase, name, addr, *len, &bytes, "memory")?;
+                self.observe(phase, name, Observation::Bytes(hex::encode(&bytes)))?;
                 self.attachments.push(rec);
             }
             Op::FlashRead { name, offset, len } => {
                 let addr = self.address(offset)?;
                 let bytes = self.machine.flash_read(addr, *len)?;
                 let rec = self.record_attachment(phase, name, addr, *len, &bytes, "flash")?;
+                self.observe(phase, name, Observation::Bytes(hex::encode(&bytes)))?;
                 self.attachments.push(rec);
             }
         }
         Ok(())
+    }
+
+    fn observe(&mut self, phase: &str, name: &str, value: Observation) -> Result<()> {
+        let occurrence = self.observations.insert(phase, name, value.clone());
+        self.ev.event(json!({"event":"observation", "phase":phase, "name":name, "occurrence":occurrence, "value":value}))
     }
 
     /// Write attachment bytes to evidence and return the record.

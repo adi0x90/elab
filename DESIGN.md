@@ -1,6 +1,6 @@
 # Architecture
 
-The CLI loads an experiment and its device profile, opens the configured transports, checks image identity when configured, and passes the phases to `elab-core`.
+The CLI resolves typed parameters and expands named measurement sequences before opening any transport. It loads the experiment and its device profile, opens the configured transports, checks image identity when configured, and passes the phases to `elab-core`.
 
 ```text
 experiment.yaml + device.toml
@@ -21,6 +21,10 @@ experiment.yaml + device.toml
 An experiment is an ordered list of named phases. Each phase contains operations; phase names have no special behavior. Baseline, change, and recovery are conventions that an experiment author can choose.
 
 Captured values are available to later operations through `${name}` substitution. Writes save the original bytes before attempting the mutation and check the resulting bytes. An execution error triggers best-effort restoration in reverse order. An expectation mismatch records a failure and permits subsequent operations to run. The caller receives published rows, failures, and the overall assertion result.
+
+Named writes retain their saved-byte index until an explicit, readback-verified restore removes it. Active overlapping writes must be restored in reverse order. Error rollback reports failed writes/readbacks.
+
+Captures, sampled channels, attachments, and named writes emit typed observation events. Comparisons reference these events by phase, name, and optional occurrence; failures continue to recovery. The offline verifier uses the same comparison function and reconstructs references in event order. Reports align observations without merging their timing.
 
 The runner does not implement transactions. Restoring bytes cannot undo peripheral side effects or a reset, and restoration can fail when the debug connection is lost. See the target-state limitations in [README.md](README.md).
 
