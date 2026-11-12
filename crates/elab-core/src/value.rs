@@ -3,10 +3,35 @@ use std::fmt;
 
 #[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
 pub enum Value {
-    Float(f64),
+    Float(#[serde(with = "float_literal")] f64),
     Int(i64),
     UInt(u64),
     Text(String),
+}
+
+// JSON has no NaN/infinity numbers. Preserve these observations as literals
+// so reports remain readable and comparisons can reject them explicitly.
+mod float_literal {
+    use serde::{Deserialize, Deserializer, Serializer};
+    pub fn serialize<S: Serializer>(n: &f64, serializer: S) -> Result<S::Ok, S::Error> {
+        if n.is_finite() {
+            serializer.serialize_f64(*n)
+        } else {
+            serializer.serialize_str(&n.to_string())
+        }
+    }
+    pub fn deserialize<'de, D: Deserializer<'de>>(deserializer: D) -> Result<f64, D::Error> {
+        #[derive(Deserialize)]
+        #[serde(untagged)]
+        enum Literal {
+            Number(f64),
+            Text(String),
+        }
+        match Literal::deserialize(deserializer)? {
+            Literal::Number(n) => Ok(n),
+            Literal::Text(s) => s.parse().map_err(serde::de::Error::custom),
+        }
+    }
 }
 
 impl Value {
@@ -104,6 +129,17 @@ mod tests {
         assert_eq!(Value::from_gdb("127 '\\177'"), Value::Int(127));
         assert_eq!(Value::from_gdb("-1 '\\377'"), Value::Int(-1));
         assert_eq!(Value::from_gdb("32 ' '"), Value::Int(32));
+    }
+
+    #[test]
+    fn nonfinite_observations_round_trip_through_json() {
+        for n in [f64::NAN, f64::INFINITY, f64::NEG_INFINITY] {
+            let json = serde_json::to_string(&Value::Float(n)).unwrap();
+            let restored: Value = serde_json::from_str(&json)
+                .expect("nonfinite values must remain readable evidence");
+            let got = restored.as_f64().unwrap();
+            assert!(if n.is_nan() { got.is_nan() } else { got == n });
+        }
     }
 
     #[test]
