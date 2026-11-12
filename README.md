@@ -156,6 +156,107 @@ explicit `halt`, the runner attempts to resume after restoring saved writes;
 a failed resume is reported with the original error. Successful runs follow
 the final operation, so include `resume` to leave the target running.
 
+### Reusing an experiment
+
+Declare typed inputs once and override them without editing YAML:
+
+```yaml
+parameters:
+  address: { kind: address }
+  value: { kind: u8, default: 0 }
+measurements:
+  sample:
+    - { op: capture, name: candidate, expr: "*(unsigned char*)${address}" }
+    - { op: attachment, name: bytes, at: "${address}", len: 1 }
+```
+
+```bash
+elab check experiments/ram-compare.yaml --set address=0x20000000 --set value=1
+elab run experiments/ram-compare.yaml --set address=0x20000000 --set value=1
+```
+
+Replace that illustrative address with a known writable SRAM location on your
+own target and configure the ELF, connection, and image checks first. The
+[complete example](experiments/ram-compare.yaml) holds the CPU halted through
+baseline, same-value store, mutation, and recovery. It resumes only after
+restoration. Choose a mutation value different from the baseline; otherwise the
+`not_equal` comparison correctly fails. This example tests memory access and
+restoration, not an effect on running firmware.
+
+Parameter kinds are `address`, `u8`, `u32`, `u64`, `i8`, `i32`, `i64`, `f32`, and
+`f64`. Addresses and unsigned integers accept decimal or `0x` hex. Values must
+be finite and within range. A missing default makes the parameter required.
+Unknown, repeated, missing, and invalid overrides fail before any transport is
+opened. `check` accepts the same overrides as `run`. Resolved values are saved
+in the run evidence. Parameter substitution is static; use different names for
+parameters and runtime captures. Existing `${capture}` substitutions still work.
+
+Invoke a measurement with `{ op: measure, name: sample }`. It expands in place
+into its ordered operations; nested measurements are supported, recursive ones
+are rejected. Every stop and resume remains explicit. Reuse does not make
+observations taken at different stops simultaneous. Existing phases and
+`repeat` work unchanged.
+
+Give a memory write an optional ID, then restore its exact saved bytes:
+
+```yaml
+- { op: write, id: edit, at: "${address}", kind: u8, value: "${value}" }
+- { op: measure, name: sample }
+- { op: restore, write: edit }
+```
+
+Restoration reads the bytes back and reports a mismatch. A write ID remains
+active until restored; it can then be reused, including in repeated phases.
+Overlapping writes must be restored in reverse order. Successfully restored
+writes are removed from error rollback so a later error cannot reapply them.
+Error rollback remains best effort, but write/readback failures are now surfaced.
+Restoration is a memory operation, not an undo for register side effects, resets,
+or firmware actions. Choose a valid restoration point and verify behavior
+separately when the target runs between observations.
+
+### Comparing observations and exporting results
+
+`compare` references recorded values rather than evaluating target expressions:
+
+```yaml
+- { op: compare, left: mutation.bytes, right: baseline.bytes, relation: not_equal }
+- { op: compare, left: recovery.output, right: baseline.output, tolerance: 0.0001 }
+- { op: compare, left: recovery.count, right: baseline.count, relation: greater }
+```
+
+References are `phase.name`. Captures, published fields (`x`, `count`, and channel
+names), attachments, and named writes (`phase.id.before` / `phase.id.after`) are
+available. If the same name is observed more than once within a phase, select
+an occurrence with `phase.name#1`, `#2`, etc. Repeated phase names include their
+iteration: `snapshot[2].value`. Unqualified ambiguous references fail rather
+than silently selecting the latest value.
+
+Relations are `equal` (default), `not_equal`, and `greater`. Numeric tolerance
+is absolute and defaults to zero: equality means the difference is at most the
+tolerance, inequality means it exceeds it, and greater requires a positive
+difference exceeding it. Bytes and text support exact equality/inequality only.
+Nonfinite values, missing observations, and incompatible types fail comparison.
+A failed comparison records a failure and continues, so the explicit recovery
+phase still runs. A comparison establishes an observed relationship, not its
+cause. A greater counter alone does not establish that several channels belong
+to the same sample; capture and compare their counters where that matters.
+
+```bash
+elab report runs/ram-compare-<timestamp>
+elab report runs/ram-compare-<timestamp> --format markdown > comparison.md
+elab verify runs/ram-compare-<timestamp>
+```
+
+Reports align observations by phase, preserve repeated values, show numeric
+deltas relative to the first phase, and mark absent cells `missing`. Long values
+are shortened only for display; complete values remain in evidence. Runs with
+comparisons also print this table automatically. `report` renders the saved
+status; `verify` independently recomputes comparison outcomes from preceding
+recorded observations as well as checking the existing expectations. This is
+consistency checking of editable evidence, not attestation of target behavior.
+Older runs without observation records can still be verified; the new comparison
+report cannot reconstruct their missing observation metadata.
+
 ### OpenOCD lifecycle management
 
 When `transport.openocd` is configured, `elab` handles the debug server for you:
@@ -216,7 +317,7 @@ Events record phases, stops, captures, writes, observations, and expectations. S
 
 Run only specifications and profiles you trust. GDB expressions can modify the target, and `[power] cycle` executes a local command. Profiles and specifications are not sandboxed. Use simple names without path separators for experiments and attachments.
 
-On an execution error, the runner attempts to restore saved writes in reverse order. Restoration is best effort, and errors during restoration are currently ignored. Assertion failures are recorded while later phases continue, allowing an explicit recovery phase to run. Successful execution leaves the target in the state set by the final phase. Include recovery operations when you need them; resets, power cycles, peripheral writes, and external effects are not reversible through a byte restore.
+On an execution error, the runner attempts to restore saved writes in reverse order. Restoration is best effort; write and readback failures during restoration are reported. Assertion failures are recorded while later phases continue, allowing an explicit recovery phase to run. Successful execution leaves the target in the state set by the final phase. Include recovery operations when you need them; resets, power cycles, peripheral writes, and external effects are not reversible through a byte restore.
 
 The CLI attempts to detach after phase execution. Setup failures and interrupted processes can leave debug state behind, and GDB waits have no overall deadline. Check the target and debug server after an interrupted run.
 

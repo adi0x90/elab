@@ -60,6 +60,9 @@ pub = { addr = 0x1000 }
         name: "mock".into(),
         device: "mock.toml".into(),
         transport: Transport::default(),
+        parameters: Default::default(),
+        measurements: Default::default(),
+        resolved_parameters: Default::default(),
         phases: vec![Phase {
             repeat: 1,
             name: "run".into(),
@@ -120,6 +123,9 @@ fn repeated_capture_names_keep_before_and_after_observations() {
         name: "capture-history".into(),
         device: "mock.toml".into(),
         transport: Transport::default(),
+        parameters: Default::default(),
+        measurements: Default::default(),
+        resolved_parameters: Default::default(),
         phases: vec![
             Phase {
                 repeat: 1,

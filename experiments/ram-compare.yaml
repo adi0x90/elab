@@ -1,0 +1,38 @@
+# Supply a known, writable SRAM byte. The target stays halted until recovery.
+# Example: elab run experiments/ram-compare.yaml --set address=0x20000000 --set value=1
+name: ram-compare
+device: ../devices/example.toml
+transport:
+  gdb:
+    endpoint: "127.0.0.1:3333"
+    elf: "firmware.elf"
+parameters:
+  address: { kind: address }
+  value: { kind: u8, default: 0 }
+measurements:
+  byte:
+    - { op: capture, name: current_byte, expr: "*(unsigned char*)${address}" }
+    - { op: attachment, name: bytes, at: "${address}", len: 1 }
+phases:
+  - name: baseline
+    ops:
+      - { op: halt }
+      - { op: measure, name: byte }
+  - name: same_value
+    ops:
+      - { op: write, id: sham, at: "${address}", kind: u8, value: "${current_byte}" }
+      - { op: measure, name: byte }
+      - { op: restore, write: sham }
+      - { op: compare, left: same_value.bytes, right: baseline.bytes }
+  - name: mutation
+    ops:
+      - { op: write, id: edit, at: "${address}", kind: u8, value: "${value}" }
+      - { op: measure, name: byte }
+      - { op: compare, left: mutation.bytes, right: mutation.edit.after }
+      - { op: compare, left: mutation.bytes, right: baseline.bytes, relation: not_equal }
+  - name: recovery
+    ops:
+      - { op: restore, write: edit }
+      - { op: measure, name: byte }
+      - { op: compare, left: recovery.bytes, right: baseline.bytes }
+      - { op: resume }

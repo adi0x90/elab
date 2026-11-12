@@ -3,6 +3,7 @@
 pub mod device;
 pub mod evidence;
 pub mod image;
+pub mod observation;
 pub mod openocd;
 pub mod runner;
 pub mod spec;

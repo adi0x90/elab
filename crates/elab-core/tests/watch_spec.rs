@@ -114,17 +114,18 @@ phases:
         .lines()
         .map(|line| serde_json::from_str(line).unwrap())
         .collect();
-    assert_eq!(records.len(), 5);
-    assert_eq!(records[2]["event"], "watch");
-    assert_eq!(records[2]["expr"], "nn_act[4]");
-    assert_eq!(records[2]["hit"]["pc"], 0x1004);
-    assert_eq!(records[2]["hit"]["old"], "25");
-    assert_eq!(records[2]["hit"]["new"], "26");
-    assert_eq!(records[2]["hit"]["raw"], RAW_HIT);
-    assert_eq!(records[3]["event"], "backtrace");
-    assert_eq!(records[3]["mi"], RAW_STACK);
-    assert_eq!(records[4]["event"], "stop");
-    assert_eq!(records[4]["pc"], "0x1000");
+    assert_eq!(records.len(), 6);
+    assert_eq!(records[2]["event"], "observation");
+    assert_eq!(records[3]["event"], "watch");
+    assert_eq!(records[3]["expr"], "nn_act[4]");
+    assert_eq!(records[3]["hit"]["pc"], 0x1004);
+    assert_eq!(records[3]["hit"]["old"], "25");
+    assert_eq!(records[3]["hit"]["new"], "26");
+    assert_eq!(records[3]["hit"]["raw"], RAW_HIT);
+    assert_eq!(records[4]["event"], "backtrace");
+    assert_eq!(records[4]["mi"], RAW_STACK);
+    assert_eq!(records[5]["event"], "stop");
+    assert_eq!(records[5]["pc"], "0x1000");
     ev.finish(true, serde_json::json!({})).unwrap();
     std::fs::remove_dir_all(dir).unwrap();
 }

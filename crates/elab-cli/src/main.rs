@@ -1,3 +1,4 @@
+mod report;
 use clap::{Parser, Subcommand};
 use elab_core::image::check_image;
 use elab_core::{
@@ -5,9 +6,14 @@ use elab_core::{
 };
 use serde_json::json;
 use std::path::{Path, PathBuf};
-use toml;
 
 const OPS_HELP: &str = r#"EXPERIMENT OPS
+
+  measure        { op: measure, name: <measurement> } # ordered ops declared in measurements
+  restore        { op: restore, write: <write-id> }    # exact original bytes + readback
+  compare        { op: compare, left: "baseline.value", right: "recovery.value",
+                   relation: equal|not_equal|greater, tolerance: 0 }
+                 # captures / published fields / attachments; #1, #2 selects repeats
 
   halt           { op: halt }                     # halt now, without resetting
   resume         { op: resume }                   # continue, do not wait for a stop
@@ -17,7 +23,7 @@ const OPS_HELP: &str = r#"EXPERIMENT OPS
   backtrace      { op: backtrace }                   # raw GDB/MI stack frames
   stop           { op: stop, at: <stop>, when: "<cond>", timeout_ms }
   capture        { op: capture, name: <var>, expr: "<expr>" }
-  write          { op: write, at: "<addr>", kind: f32|f64|i8|u8|u32|i32,
+  write          { op: write, id: <optional-write-id>, at: "<addr>", kind: f32|f64|i8|u8|u32|i32,
                    value: "<expr>" }            # scalar, or:
                  { op: write, at: "<addr>", kind: u8|u32, values: ["..", ..] }
   write_reg      { op: write_reg, name: "<reg>", value: "<expr>" }
@@ -64,9 +70,10 @@ TRANSPORT
 
 COMMANDS
 
-  elab run <SPEC> [--runs DIR]     execute phases and save evidence
-  elab check <SPEC>                validate spec + profile, no hardware
+  elab run <SPEC> [--runs DIR] [--set NAME=VALUE]     execute phases and save evidence
+  elab check <SPEC> [--set NAME=VALUE] validate spec + profile, no hardware
   elab stamp <SPEC>                write the transport ELF hash into the profile
+  elab report <RUN_DIR> [--format text|markdown]  render saved observations
   elab verify <RUN_DIR>            re-check recorded expectations
   elab devices <DIR>               list TOML device profiles
   elab ops                         print this reference
@@ -95,12 +102,22 @@ enum Cmd {
         after_help = "Example:\n  elab run experiments/capture.yaml --runs ./runs"
     )]
     Run {
+        /// Override a declared typed parameter (repeatable).
+        #[arg(long = "set", value_name = "NAME=VALUE")]
+        parameters: Vec<String>,
         /// Path to the experiment YAML.
         #[arg(value_name = "SPEC")]
         spec: PathBuf,
         /// Directory for the evidence directory (default: runs).
         #[arg(long, default_value = "runs", value_name = "DIR")]
         runs: PathBuf,
+    },
+    /// Render saved observations and comparisons without hardware.
+    Report {
+        #[arg(value_name = "RUN_DIR")]
+        run: PathBuf,
+        #[arg(long, default_value = "text", value_parser = ["text", "markdown"])]
+        format: String,
     },
     /// Re-check a recorded run without hardware.
     Verify {
@@ -119,6 +136,9 @@ enum Cmd {
         long_about = "Load the experiment spec and its device profile, resolve ELF paths and hashes, and report errors. No target is opened.\n\nUseful before hardware is connected, and for iterating on YAML/TOML syntax without a board."
     )]
     Check {
+        /// Override a declared typed parameter (repeatable).
+        #[arg(long = "set", value_name = "NAME=VALUE")]
+        parameters: Vec<String>,
         /// Path to the experiment YAML.
         #[arg(value_name = "SPEC")]
         spec: PathBuf,
@@ -146,10 +166,15 @@ fn main() {
 
 fn dispatch(cli: Cli) -> Result<()> {
     match cli.cmd {
-        Cmd::Run { spec, runs } => run_cmd(spec, runs),
+        Cmd::Run {
+            spec,
+            runs,
+            parameters,
+        } => run_cmd(spec, runs, parameters),
+        Cmd::Report { run, format } => report_cmd(run, format == "markdown"),
         Cmd::Verify { run } => verify_cmd(run),
         Cmd::Devices { dir } => devices_cmd(dir),
-        Cmd::Check { spec } => check_cmd(spec),
+        Cmd::Check { spec, parameters } => check_cmd(spec, parameters),
         Cmd::Stamp { spec } => stamp_cmd(spec),
         Cmd::Ops => {
             print!("{OPS_HELP}");
@@ -202,8 +227,8 @@ fn machine_for(
     Ok((Box::new(elab_core::NoMachine), None))
 }
 
-fn run_cmd(spec_path: PathBuf, runs: PathBuf) -> Result<()> {
-    let spec = ExperimentSpec::load(&spec_path)?;
+fn run_cmd(spec_path: PathBuf, runs: PathBuf, parameters: Vec<String>) -> Result<()> {
+    let spec = ExperimentSpec::load_with_parameters(&spec_path, &parameters)?;
     let base = spec_path.parent().unwrap_or_else(|| Path::new("."));
     let device_path = base.join(&spec.device);
     let device = Device::load(&device_path)?;
@@ -221,6 +246,7 @@ fn run_cmd(spec_path: PathBuf, runs: PathBuf) -> Result<()> {
     let (mut machine, _ocd) = machine_for(&spec, &device)?;
 
     let mut ev = Evidence::create(&runs, &spec.name)?;
+    ev.event(json!({"event":"parameters", "values":spec.resolved_parameters}))?;
     let result = run(
         &spec,
         &device,
@@ -245,10 +271,16 @@ fn run_cmd(spec_path: PathBuf, runs: PathBuf) -> Result<()> {
     if let Some(mut s) = serial {
         s.close();
     }
-    print_table(&result);
+    let recorded = report::events(&std::fs::read_to_string(ev.dir().join("events.jsonl"))?)?;
+    if recorded.iter().any(|e| e["event"] == "compare") {
+        print!("{}", report::render(&recorded, false)?);
+    } else {
+        print_table(&result);
+    }
 
     let mut manifest = json!({
         "name": spec.name,
+        "parameters": spec.resolved_parameters,
         "device": device.name,
         "spec": spec_path.display().to_string(),
         "spec_sha256": sha256_hex(&std::fs::read(&spec_path)?),
@@ -331,6 +363,9 @@ fn verify_cmd(run: PathBuf) -> Result<()> {
     let manifest_text = std::fs::read_to_string(run.join("manifest.json"))?;
     let manifest: serde_json::Value = serde_json::from_str(&manifest_text)?;
     let events_text = std::fs::read_to_string(run.join("events.jsonl"))?;
+    let records = report::events(&events_text)?;
+    report::verify_comparisons(&records)?;
+    let comparisons = records.iter().filter(|e| e["event"] == "compare").count();
     let mut expects = 0usize;
     let mut bad = 0usize;
     let mut events = 0u64;
@@ -351,7 +386,7 @@ fn verify_cmd(run: PathBuf) -> Result<()> {
         }
     }
     println!(
-        "manifest ok={:?} expects={} failed={}",
+        "manifest ok={:?} expects={} comparisons={comparisons} failed={}",
         manifest.get("ok"),
         expects,
         bad
@@ -362,6 +397,27 @@ fn verify_cmd(run: PathBuf) -> Result<()> {
     {
         return Err(ElabError::msg("verification failed"));
     }
+    Ok(())
+}
+
+fn report_cmd(run: PathBuf, markdown: bool) -> Result<()> {
+    let manifest: serde_json::Value =
+        serde_json::from_str(&std::fs::read_to_string(run.join("manifest.json"))?)?;
+    println!(
+        "Recorded run status: {}\n",
+        if manifest["ok"] == true {
+            "completed"
+        } else {
+            "failed"
+        }
+    );
+    print!(
+        "{}",
+        report::render(
+            &report::events(&std::fs::read_to_string(run.join("events.jsonl"))?)?,
+            markdown
+        )?
+    );
     Ok(())
 }
 
@@ -379,8 +435,8 @@ fn devices_cmd(dir: PathBuf) -> Result<()> {
     Ok(())
 }
 
-fn check_cmd(spec_path: PathBuf) -> Result<()> {
-    let spec = ExperimentSpec::load(&spec_path)?;
+fn check_cmd(spec_path: PathBuf, parameters: Vec<String>) -> Result<()> {
+    let spec = ExperimentSpec::load_with_parameters(&spec_path, &parameters)?;
     let base = spec_path.parent().unwrap_or_else(|| Path::new("."));
     let device_path = base.join(&spec.device);
     let device = Device::load(&device_path)?;
